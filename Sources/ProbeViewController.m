@@ -13,6 +13,7 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
 @property (nonatomic, copy) void (^logger)(NSString *line);
 @property (nonatomic, strong) NSMutableSet<NSString *> *seenUUIDs;
 @property (nonatomic, strong) NSFileHandle *logFile;
+@property (nonatomic, strong) CBPeripheralManager *pm;
 - (void)begin;
 - (void)sendLevel:(int)level;
 @end
@@ -137,6 +138,27 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
     [self log:@"=== scan start (state=%ld) ===", (long)self.central.state];
     [self.central scanForPeripheralsWithServices:nil
                                          options:@{CBCentralManagerScanOptionAllowDuplicatesKey: @YES}];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self log:@"isScanning=%d", (int)self.central.isScanning];
+    });
+    [self peripheralManagerSelfTest];
+    // 已连接的 BLE 设备（系统帮我们连着的）也算线索
+    NSArray *svcs = @[[CBUUID UUIDWithString:@"FD82"],
+                      [CBUUID UUIDWithString:@"5B833E06-6BC7-4802-8E9A-723CECA4BD8F"],
+                      [CBUUID UUIDWithString:@"5B833E26-6BC7-4802-8E9A-723CECA4BD8F"]];
+    for (CBUUID *u in svcs) {
+        NSArray *arr = [self.central retrieveConnectedPeripheralsWithServices:@[u]];
+        [self log:@"retrieveConnected %@ -> %lu", u.UUIDString, (unsigned long)arr.count];
+        for (CBPeripheral *pp in arr) [self log:@"   known %@ %@", pp.name, pp.identifier.UUIDString];
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(13 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self.seenUUIDs.count == 0) {
+            [self log:@"=== 第二轮：只按索尼服务 UUID 扫描 ==="];
+            [self.central stopScan];
+            [self.central scanForPeripheralsWithServices:svcs
+                                                 options:@{CBCentralManagerScanOptionAllowDuplicatesKey: @YES}];
+        }
+    });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (self.peripheral == nil) {
             [self log:@"--- 12s 内共发现 %lu 个 BLE 设备 ---", (unsigned long)self.seenUUIDs.count];
@@ -144,6 +166,15 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
                 [self log:@"提示：耳机可能正连着手机音频（设置-蓝牙），此时不广播 BLE"];
             }
         }
+    });
+}
+
+- (void)peripheralManagerSelfTest {
+    if (self.pm == nil) {
+        self.pm = [[CBPeripheralManager alloc] initWithDelegate:nil queue:dispatch_get_main_queue()];
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self log:@"peripheralManager state=%ld advertising=%d", (long)self.pm.state, (int)self.pm.isAdvertising];
     });
 }
 
