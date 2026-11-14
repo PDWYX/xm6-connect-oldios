@@ -1,0 +1,30 @@
+name: XM6Control
+options:
+  bundleIdPrefix: com.pdwyx
+  deploymentTarget:
+    iOS: "13.0"
+targets:
+  XM6Control:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: XM6
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        NSBluetoothAlwaysUsageDescription: "需要蓝牙连接索尼 WH-1000XM6 以调节环境声"
+        NSBluetoothPeripheralUsageDescription: "需要蓝牙连接索尼 WH-1000XM6 以调节环境声"
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiresFullScreen: true
+        MinimumOSVersion: "13.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pdwyx.xm6control
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        ONLY_ACTIVE_ARCH: NO

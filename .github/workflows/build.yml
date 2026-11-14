@@ -1,0 +1,28 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build
+        run: |
+          xcodebuild -project XM6Control.xcodeproj -scheme XM6Control \
+            -sdk iphoneos -configuration Release -derivedDataPath build \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+      - name: Package ipa
+        run: |
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Release-iphoneos/XM6Control.app out/Payload/
+          cd out && zip -qry ../XM6Control.ipa Payload
+          ls -la ../XM6Control.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XM6Control-ipa
+          path: XM6Control.ipa
