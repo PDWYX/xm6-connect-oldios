@@ -16,6 +16,7 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
 @property (nonatomic, strong) CBPeripheralManager *pm;
 - (void)begin;
 - (void)sendLevel:(int)level;
+- (void)writeVariant:(NSString *)variant level:(int)level;
 @end
 
 @interface ProbeViewController () <UITextViewDelegate>
@@ -44,10 +45,32 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
     stack.distribution = UIStackViewDistributionFillEqually;
     stack.spacing = 6;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:stack];
 
-    NSArray *titles = @[@"连接", @"测试帧", @"环境声10", @"环境声5", @"环境声18"];
-    NSArray *sels = @[@"doConnect", @"doTest", @"lvl10", @"lvl5", @"lvl18"];
+    UIStackView *row2 = [[UIStackView alloc] init];
+    row2.axis = UILayoutConstraintAxisHorizontal;
+    row2.distribution = UIStackViewDistributionFillEqually;
+    row2.spacing = 6;
+
+    NSArray *titles = @[@"连接", @"A帧", @"B帧", @"C帧"];
+    NSArray *sels = @[@"doConnect", @"doA", @"doB", @"doC"];
+    NSArray *titles2 = @[@"级别5", @"级别10", @"级别15", @"级别18"];
+    NSArray *sels2 = @[@"lvl5", @"lvl10", @"lvl15", @"lvl18"];
+    for (NSUInteger i = 0; i < titles2.count; i++) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        [b setTitle:titles2[i] forState:UIControlStateNormal];
+        [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        b.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
+        b.titleLabel.font = [UIFont systemFontOfSize:12];
+        [b addTarget:self action:NSSelectorFromString(sels2[i]) forControlEvents:UIControlEventTouchUpInside];
+        [row2 addArrangedSubview:b];
+    }
+    UIStackView *outer = [[UIStackView alloc] init];
+    outer.axis = UILayoutConstraintAxisVertical;
+    outer.spacing = 6;
+    outer.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:outer];
+    [outer addArrangedSubview:stack];
+    [outer addArrangedSubview:row2];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
         [b setTitle:titles[i] forState:UIControlStateNormal];
@@ -64,11 +87,12 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
             [self.textView.topAnchor constraintEqualToAnchor:g.topAnchor constant:8],
             [self.textView.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
             [self.textView.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
-            [self.textView.bottomAnchor constraintEqualToAnchor:stack.topAnchor constant:-8],
-            [stack.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
-            [stack.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
-            [stack.bottomAnchor constraintEqualToAnchor:g.bottomAnchor constant:-8],
-            [stack.heightAnchor constraintEqualToConstant:44],
+            [self.textView.bottomAnchor constraintEqualToAnchor:outer.topAnchor constant:-8],
+            [outer.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
+            [outer.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
+            [outer.bottomAnchor constraintEqualToAnchor:g.bottomAnchor constant:-8],
+            [stack.heightAnchor constraintEqualToConstant:40],
+            [row2.heightAnchor constraintEqualToConstant:40],
         ]];
     }
 
@@ -91,9 +115,13 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
 
 - (void)doConnect { [self.tester begin]; }
 - (void)doTest { [self.tester sendLevel:-1]; }
-- (void)lvl10 { [self.tester sendLevel:10]; }
-- (void)lvl5 { [self.tester sendLevel:5]; }
-- (void)lvl18 { [self.tester sendLevel:18]; }
+- (void)doA { [self.tester writeVariant:@"A" level:10]; }
+- (void)doB { [self.tester writeVariant:@"B" level:10]; }
+- (void)doC { [self.tester writeVariant:@"C" level:10]; }
+- (void)lvl10 { [self.tester writeVariant:@"A" level:10]; }
+- (void)lvl5 { [self.tester writeVariant:@"A" level:5]; }
+- (void)lvl15 { [self.tester writeVariant:@"A" level:15]; }
+- (void)lvl18 { [self.tester writeVariant:@"A" level:18]; }
 
 @end
 
@@ -249,6 +277,10 @@ static NSString *const kNotifyChar = @"5B833C12-6BC7-4802-8E9A-723CECA4BD8F";
     }
 }
 
+- (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    [self log:@"WROTE %@ err=%@", characteristic.UUID.UUIDString, error.localizedDescription ?: @"ok"];
+}
+
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
     NSData *d = characteristic.value;
     [self log:@"NOTIFY %@ (%lu bytes) %@", characteristic.UUID.UUIDString, (unsigned long)d.length, d];
@@ -301,6 +333,41 @@ static NSData *EscapeSpecials(NSData *raw) {
     p[6] = 0;
     p[7] = (uint8_t)(level <= 0 ? 0 : level);
     return [NSData dataWithBytes:p length:8];
+}
+
+- (void)writeVariant:(NSString *)variant level:(int)level {
+    if (self.peripheral == nil || self.writeChar == nil) {
+        [self log:@"未连接，先按连接 (peripheral=%@ writeChar=%@)", self.peripheral, self.writeChar];
+        return;
+    }
+    NSData *payload = [self ncasmPayloadWithLevel:level];
+    NSData *frame;
+    CBCharacteristicWriteType type = CBCharacteristicWriteWithResponse;
+    if ([variant isEqualToString:@"A"]) {
+        frame = [self v1FrameForPayload:payload dataType:0 seq:0 markers:YES];
+    } else if ([variant isEqualToString:@"B"]) {
+        frame = [self v1FrameForPayload:payload dataType:0 seq:0 markers:NO];
+    } else {
+        frame = payload;
+        type = CBCharacteristicWriteWithoutResponse;
+    }
+    [self log:@"WRITE %@ lvl=%d (%lu B) %@", variant, level, (unsigned long)frame.length, frame];
+    [self.peripheral writeValue:frame forCharacteristic:self.writeChar type:type];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self readStateChars];
+    });
+}
+
+- (void)readStateChars {
+    if (self.peripheral == nil) return;
+    for (CBService *s in self.peripheral.services) {
+        for (CBCharacteristic *c in s.characteristics) {
+            NSString *u = c.UUID.UUIDString.uppercaseString;
+            if ([u hasPrefix:@"5B833C68"] || [u hasPrefix:@"76C13022"] || [u hasPrefix:@"2A50"] || [u hasPrefix:@"8E0C0001"]) {
+                [self.peripheral readValueForCharacteristic:c];
+            }
+        }
+    }
 }
 
 - (void)sendLevel:(int)level {
