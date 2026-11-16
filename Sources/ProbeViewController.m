@@ -22,6 +22,9 @@ static NSString *Hex(NSData *d) {
 @property (nonatomic, strong) CBCharacteristic *notify12;
 @property (nonatomic, strong) CBCharacteristic *notify13;
 @property (nonatomic, strong) CBCharacteristic *notify1B;
+@property (nonatomic, strong) NSArray *sweepTests;
+@property (nonatomic) NSUInteger sweepIndex;
+@property (nonatomic, strong) NSTimer *forceClock;
 @property (nonatomic, strong) NSMutableArray *notifyChars;
 @property (nonatomic, copy) void (^logger)(NSString *line);
 @property (nonatomic, strong) NSMutableSet<NSString *> *seenUUIDs;
@@ -33,6 +36,7 @@ static NSString *Hex(NSData *d) {
 - (void)sendNCWithWind:(BOOL)wind;
 - (void)toggleAlt;
 - (void)runSweep;
+- (void)sweepStep;
 - (void)readStateChars;
 @end
 
@@ -291,44 +295,52 @@ static NSString *Hex(NSData *d) {
     NSData *raw = [self ambientPayload:10 wind:NO];
     NSMutableArray *tests = [NSMutableArray array];
 
-    // A: 原始整帧（已知无响应）
     [tests addObject:@[@"A raw", self.writeChar, body]];
-    // B-E: 前置 1 字节 header 猜测
     for (NSNumber *h in @[@0x00, @0x01, @0x02, @0x40, @0x80, @0xFF]) {
         NSMutableData *d = [NSMutableData dataWithBytes:(uint8_t[]){h.unsignedCharValue} length:1];
         [d appendData:body];
         [tests addObject:@[[NSString stringWithFormat:@"H%02X", h.unsignedCharValue], self.writeChar, d]];
     }
-    // F: 无标记帧体
     [tests addObject:@[@"no-markers", self.writeChar, [NSData dataWithBytes:(const uint8_t[]){0x0C,0x00,0,0,0,7,0x68,0x15,0x01,0x00,0x01,0x00,0x0A} length:13]]];
-    // G: 裸 payload
     [tests addObject:@[@"raw-payload", self.writeChar, raw]];
-    // H/I: 写到 C11
     if (self.writeChar11) [tests addObject:@[@"C11 frame", self.writeChar11, body]];
-    // J/K: 写到 C1C（另一个写特征）
     if (self.writeChar1C) {
         [tests addObject:@[@"C1C frame", self.writeChar1C, body]];
         NSMutableData *d = [NSMutableData dataWithBytes:(uint8_t[]){0x00} length:1];
         [d appendData:body];
         [tests addObject:@[@"C1C H00", self.writeChar1C, d]];
     }
-    // L: 单字节探针
     [tests addObject:@[@"byte 00", self.writeChar, [NSData dataWithBytes:(uint8_t[]){0x00} length:1]]];
     [tests addObject:@[@"byte 01", self.writeChar, [NSData dataWithBytes:(uint8_t[]){0x01} length:1]]];
 
-    __block NSUInteger i = 0;
-    __weak typeof(self) weakSelf = self;
-    void (^next)(void) = ^{
-        typeof(self) s = weakSelf;
-        if (!s || i >= tests.count) { [s log:@"=== sweep 结束 ==="]; return; }
-        NSArray *t = tests[i];
-        i++;
-        [s log:@"### %@ -> %@  %@", t[0], [(CBCharacteristic *)t[1] UUID].UUIDString, Hex(t[2])];
-        [s.peripheral writeValue:t[2] forCharacteristic:t[1] type:CBCharacteristicWriteWithResponse];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), next);
-    };
-    [self log:@"=== sweep 开始（%@ 个变体，每个 1.6s）===", @(tests.count)];
-    next();
+    self.sweepTests = tests;
+    self.sweepIndex = 0;
+    [self.forceClock invalidate];
+    self.forceClock = nil;
+    [self log:@"=== sweep 开始（%lu 个变体，每个 1.6s）===", (unsigned long)tests.count];
+    [self sweepStep];
+}
+
+- (void)sweepStep {
+    [self.forceClock invalidate];
+    self.forceClock = nil;
+    if (self.sweepIndex >= self.sweepTests.count) {
+        [self log:@"=== sweep 结束 ==="];
+        self.sweepTests = nil;
+        return;
+    }
+    NSArray *t = self.sweepTests[self.sweepIndex];
+    self.sweepIndex++;
+    CBCharacteristic *ch = t[1];
+    NSData *data = t[2];
+    [self log:@"### %@ -> %@  %@", t[0], ch.UUID.UUIDString, Hex(data)];
+    if (ch != nil && data != nil && self.peripheral.state == CBPeripheralStateConnected) {
+        [self.peripheral writeValue:data forCharacteristic:ch type:CBCharacteristicWriteWithResponse];
+    } else {
+        [self log:@"  跳过（特征或数据为空）"];
+    }
+    self.forceClock = [NSTimer scheduledTimerWithTimeInterval:1.6 target:self
+                                                     selector:@selector(sweepStep) userInfo:nil repeats:NO];
 }
 
 - (NSData *)ambientPayload:(int)level wind:(BOOL)wind {
