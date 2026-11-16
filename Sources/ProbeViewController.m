@@ -18,6 +18,10 @@ static NSString *Hex(NSData *d) {
 @property (nonatomic, strong) CBPeripheral *peripheral;
 @property (nonatomic, strong) CBCharacteristic *writeChar;
 @property (nonatomic, strong) CBCharacteristic *writeChar11;
+@property (nonatomic, strong) CBCharacteristic *writeChar1C;
+@property (nonatomic, strong) CBCharacteristic *notify12;
+@property (nonatomic, strong) CBCharacteristic *notify13;
+@property (nonatomic, strong) CBCharacteristic *notify1B;
 @property (nonatomic, strong) NSMutableArray *notifyChars;
 @property (nonatomic, copy) void (^logger)(NSString *line);
 @property (nonatomic, strong) NSMutableSet<NSString *> *seenUUIDs;
@@ -28,6 +32,7 @@ static NSString *Hex(NSData *d) {
 - (void)sendAmbientLevel:(int)level wind:(BOOL)wind;
 - (void)sendNCWithWind:(BOOL)wind;
 - (void)toggleAlt;
+- (void)runSweep;
 - (void)readStateChars;
 @end
 
@@ -82,12 +87,12 @@ static NSString *Hex(NSData *d) {
     outer.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:outer];
 
-    [outer addArrangedSubview:[self rowWithTitles:@[@"连接", @"INIT", @"通道2", @"读状态"]
-                                            sels:@[@"doConnect", @"doInit", @"doAlt", @"doRead"] bg:0.28]];
+    [outer addArrangedSubview:[self rowWithTitles:@[@"连接", @"INIT", @"扫描", @"读状态"]
+                                            sels:@[@"doConnect", @"doInit", @"doSweep", @"doRead"] bg:0.28]];
     [outer addArrangedSubview:[self rowWithTitles:@[@"环境5", @"环境10", @"环境15", @"环境20"]
                                             sels:@[@"lvl5", @"lvl10", @"lvl15", @"lvl20"] bg:0.22]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"降噪", @"环境8B-10", @"降噪8B"]
-                                            sels:@[@"doNC", @"doW10", @"doWNC"] bg:0.22]];
+    [outer addArrangedSubview:[self rowWithTitles:@[@"降噪", @"通道2", @"环境8B"]
+                                            sels:@[@"doNC", @"doAlt", @"doW10"] bg:0.22]];
 
     UILayoutGuide *g = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -121,6 +126,7 @@ static NSString *Hex(NSData *d) {
 
 - (void)doConnect { [self.tester begin]; }
 - (void)doInit { [self.tester sendInit]; }
+- (void)doSweep { [self.tester runSweep]; }
 - (void)doAlt { [self.tester toggleAlt]; }
 - (void)doRead { [self.tester readStateChars]; }
 - (void)lvl5 { [self.tester sendAmbientLevel:5 wind:NO]; }
@@ -255,10 +261,14 @@ static NSString *Hex(NSData *d) {
         [self log:@"  CH %@ props=%lu", u, (unsigned long)c.properties];
         if ([u isEqualToString:kWriteChar]) self.writeChar = c;
         if ([u isEqualToString:kWriteChar11]) self.writeChar11 = c;
+        if ([u hasPrefix:@"5B833C1C"]) self.writeChar1C = c;
         if (c.properties & CBCharacteristicPropertyNotify) {
             if ([u hasPrefix:@"5B833C12"] || [u hasPrefix:@"5B833C13"] || [u hasPrefix:@"5B833C1B"]) {
                 [peripheral setNotifyValue:YES forCharacteristic:c];
                 if (![self.notifyChars containsObject:c]) [self.notifyChars addObject:c];
+                if ([u hasPrefix:@"5B833C12"]) self.notify12 = c;
+                if ([u hasPrefix:@"5B833C13"]) self.notify13 = c;
+                if ([u hasPrefix:@"5B833C1B"]) self.notify1B = c;
                 [self log:@"  -> 订阅 %@", u];
             }
         }
@@ -268,6 +278,66 @@ static NSString *Hex(NSData *d) {
 - (CBCharacteristic *)activeWriteChar {
     if (self.useAlt && self.writeChar11) return self.writeChar11;
     return self.writeChar;
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    [self log:@"NOTIFY-STATE %@ on=%d err=%@", characteristic.UUID.UUIDString,
+          (int)characteristic.isNotifying, error.localizedDescription ?: @"none"];
+}
+
+- (void)runSweep {
+    if (self.peripheral == nil || self.writeChar == nil) { [self log:@"未连接或未找到写特征 C10"]; return; }
+    NSData *body = [self frameWithType:0x0C seq:0 payload:[self ambientPayload:10 wind:NO]];
+    NSData *raw = [self ambientPayload:10 wind:NO];
+    NSMutableArray *tests = [NSMutableArray array];
+
+    // A: 原始整帧（已知无响应）
+    [tests addObject:@[@"A raw", self.writeChar, body]];
+    // B-E: 前置 1 字节 header 猜测
+    for (NSNumber *h in @[@0x00, @0x01, @0x02, @0x40, @0x80, @0xFF]) {
+        NSMutableData *d = [NSMutableData dataWithBytes:(uint8_t[]){h.unsignedCharValue} length:1];
+        [d appendData:body];
+        [tests addObject:@[[NSString stringWithFormat:@"H%02X", h.unsignedCharValue], self.writeChar, d]];
+    }
+    // F: 无标记帧体
+    [tests addObject:@[@"no-markers", self.writeChar, [NSData dataWithBytes:(const uint8_t[]){0x0C,0x00,0,0,0,7,0x68,0x15,0x01,0x00,0x01,0x00,0x0A} length:13]]];
+    // G: 裸 payload
+    [tests addObject:@[@"raw-payload", self.writeChar, raw]];
+    // H/I: 写到 C11
+    if (self.writeChar11) [tests addObject:@[@"C11 frame", self.writeChar11, body]];
+    // J/K: 写到 C1C（另一个写特征）
+    if (self.writeChar1C) {
+        [tests addObject:@[@"C1C frame", self.writeChar1C, body]];
+        NSMutableData *d = [NSMutableData dataWithBytes:(uint8_t[]){0x00} length:1];
+        [d appendData:body];
+        [tests addObject:@[@"C1C H00", self.writeChar1C, d]];
+    }
+    // L: 单字节探针
+    [tests addObject:@[@"byte 00", self.writeChar, [NSData dataWithBytes:(uint8_t[]){0x00} length:1]]];
+    [tests addObject:@[@"byte 01", self.writeChar, [NSData dataWithBytes:(uint8_t[]){0x01} length:1]]];
+
+    __block NSUInteger i = 0;
+    __weak typeof(self) weakSelf = self;
+    void (^next)(void) = ^{
+        typeof(self) s = weakSelf;
+        if (!s || i >= tests.count) { [s log:@"=== sweep 结束 ==="]; return; }
+        NSArray *t = tests[i];
+        i++;
+        [s log:@"### %@ -> %@  %@", t[0], [(CBCharacteristic *)t[1] UUID].UUIDString, Hex(t[2])];
+        [s.peripheral writeValue:t[2] forCharacteristic:t[1] type:CBCharacteristicWriteWithResponse];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), next);
+    };
+    [self log:@"=== sweep 开始（%@ 个变体，每个 1.6s）===", @(tests.count)];
+    next();
+}
+
+- (NSData *)ambientPayload:(int)level wind:(BOOL)wind {
+    uint8_t p[8];
+    NSUInteger n = 0;
+    p[n++] = 0x68; p[n++] = wind ? 0x17 : 0x15; p[n++] = 0x01; p[n++] = 0x00; p[n++] = 0x01;
+    if (wind) p[n++] = 0x02;
+    p[n++] = 0x00; p[n++] = (uint8_t)level;
+    return [NSData dataWithBytes:p length:n];
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
