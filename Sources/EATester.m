@@ -38,15 +38,15 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) NSFileHandle *logFile;
 @property (nonatomic, strong) NSDateFormatter *df;
 @property (nonatomic) BOOL connNotified;
-@property (nonatomic, strong) NSTimer *initRetryTimer;
-@property (nonatomic) int initRetryCount;
+@property (nonatomic, strong) NSTimer *bootstrapTimer;
+@property (nonatomic) int bootstrapTries;
 @property (nonatomic) BOOL linkReady;
 - (void)queryState;
-- (void)sendInitNow;
+- (void)sendBootstrap;
 @property (nonatomic) uint8_t seq;
 @property (nonatomic, strong) NSMutableData *outQueue;
 @property (nonatomic) BOOL outOpened;
-@property (nonatomic) BOOL initSent;
+@property (nonatomic) BOOL bootstrapSent;
 @property (nonatomic) BOOL handshakeReplied;
 @property (nonatomic, strong) NSTimer *previewTimer;
 @property (nonatomic) int pendingPreview;
@@ -150,12 +150,12 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [out scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
     [self.outQueue setLength:0];
     self.outOpened = NO;
-    self.initSent = NO;
+    self.bootstrapSent = NO;
     self.handshakeReplied = NO;
     self.linkReady = NO;
-    self.initRetryCount = 0;
-    [self.initRetryTimer invalidate];
-    self.initRetryTimer = nil;
+    self.bootstrapTries = 0;
+    [self.bootstrapTimer invalidate];
+    self.bootstrapTimer = nil;
     self.seq = 0;
     [in open];
     [out open];
@@ -188,9 +188,9 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         self.outOpened = YES;
         [self log:@"输出流就绪"];
         [self pump];
-        if (!self.initSent) {
-            self.initSent = YES;
-            [self sendInitNow];
+        if (!self.bootstrapSent) {
+            self.bootstrapSent = YES;
+            [self sendBootstrap];
         }
         return;
     }
@@ -241,22 +241,22 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [self pump];
 }
 
-- (void)sendInitNow {
+- (void)sendBootstrap {
     [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2] label:@"INIT"];
-    [self.initRetryTimer invalidate];
-    self.initRetryTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(initRetryTick) userInfo:nil repeats:NO];
+    [self.bootstrapTimer invalidate];
+    self.bootstrapTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(bootstrapTick) userInfo:nil repeats:NO];
 }
 
-- (void)initRetryTick {
+- (void)bootstrapTick {
     if (!self.session) return;
     if (self.linkReady) return;
-    if (self.initRetryCount >= 4) {
+    if (self.bootstrapTries >= 4) {
         [self log:@"耳机无响应，放弃 INIT"];
         return;
     }
-    self.initRetryCount++;
-    [self log:@"链路未就绪，重发 INIT (%d)", self.initRetryCount];
-    [self sendInitNow];
+    self.bootstrapTries++;
+    [self log:@"链路未就绪，重发 INIT (%d)", self.bootstrapTries];
+    [self sendBootstrap];
 }
 
 - (void)writeFrameType:(uint8_t)type payload:(NSData *)payload label:(NSString *)label {
@@ -286,8 +286,8 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         uint8_t type = p[1], fseq = p[2];
         if (!self.linkReady) {
             self.linkReady = YES;
-            [self.initRetryTimer invalidate];
-            self.initRetryTimer = nil;
+            [self.bootstrapTimer invalidate];
+            self.bootstrapTimer = nil;
             [self log:@"链路就绪"];
         }
         NSData *payload = [self.rxBuf subdataWithRange:NSMakeRange(7, len)];
