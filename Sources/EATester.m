@@ -37,6 +37,16 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) NSFileHandle *logFile;
 @property (nonatomic) uint8_t seq;
 @property (nonatomic) int lastLevel;
+@property (nonatomic, strong) NSMutableData *outQueue;
+@property (nonatomic) BOOL outOpened;
+@property (nonatomic) BOOL initSent;
+@property (nonatomic, strong) NSTimer *previewTimer;
+@property (nonatomic) int pendingPreview;
+@property (nonatomic, strong) NSTimer *resendTimer;
+@property (nonatomic) int resendCount;
+@property (nonatomic, strong) NSData *lastCommit;
+@property (nonatomic) int lastCommitMode;
+@property (nonatomic, strong) NSDate *lastTxTime;
 @end
 
 @implementation EATester
@@ -72,6 +82,8 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 
 - (void)begin {
     if (!self.rxBuf) self.rxBuf = [NSMutableData data];
+    if (!self.outQueue) self.outQueue = [NSMutableData data];
+    self.pendingPreview = -1;
     self.lastLevel = 10;
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(accConnected:) name:EAAccessoryDidConnectNotification object:nil];
@@ -122,14 +134,21 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     in.delegate = self; out.delegate = self;
     [in scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
     [out scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
-    [in open]; [out open];
-    [self log:@"会话已打开 %@", proto];
-    // 主动发 INIT
+    [self.outQueue setLength:0];
+    self.outOpened = NO;
+    self.initSent = NO;
     self.seq = 0;
-    [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2] label:@"INIT"];
+    [in open];
+    [out open];
+    [self log:@"会话已打开 %@", proto];
 }
 
 - (void)closeSession {
+    [self.previewTimer invalidate]; self.previewTimer = nil;
+    [self.resendTimer invalidate]; self.resendTimer = nil;
+    self.pendingPreview = -1;
+    self.outOpened = NO;
+    if (self.outQueue) [self.outQueue setLength:0];
     if (self.session) {
         [[self.session inputStream] close];
         [[self.session outputStream] close];
@@ -138,6 +157,20 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 }
 
 - (void)stream:(NSStream *)stream handleEvent:(NSStreamEvent)event {
+    if (event == NSStreamEventOpenCompleted && stream == self.session.outputStream) {
+        self.outOpened = YES;
+        [self log:@"输出流就绪"];
+        [self pump];
+        if (!self.initSent) {
+            self.initSent = YES;
+            [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2] label:@"INIT"];
+        }
+        return;
+    }
+    if (event == NSStreamEventHasSpaceAvailable) {
+        [self pump];
+        return;
+    }
     if (event == NSStreamEventHasBytesAvailable && stream == self.session.inputStream) {
         uint8_t buf[2048];
         NSInteger n = [(NSInputStream *)stream read:buf maxLength:sizeof(buf)];
@@ -156,11 +189,27 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     return MDRFrame(type, self.seq++, payload);
 }
 
-- (void)writeRaw:(NSData *)d label:(NSString *)label {
+- (void)pump {
     NSOutputStream *out = self.session.outputStream;
-    if (out.streamStatus != NSStreamStatusOpen) { [self log:@"%@: 流未打开", label]; return; }
-    NSInteger n = [out write:d.bytes maxLength:d.length];
-    if (n != (NSInteger)d.length) [self log:@"%@ 写失败 %ld/%lu", label, (long)n, (unsigned long)d.length];
+    if (!out) return;
+    if (!self.outOpened && out.streamStatus != NSStreamStatusOpen) return;
+    while (self.outQueue.length > 0) {
+        if (![out hasSpaceAvailable]) return;
+        NSInteger n = [out write:self.outQueue.bytes maxLength:self.outQueue.length];
+        if (n <= 0) return;
+        [self.outQueue replaceBytesInRange:NSMakeRange(0, (NSUInteger)n) withBytes:NULL length:0];
+    }
+}
+
+- (void)writeRaw:(NSData *)d label:(NSString *)label {
+    if (!self.session) return;
+    if (self.outQueue.length > 2048) {
+        [self log:@"队列积压，丢弃"];
+        [self.outQueue setLength:0];
+    }
+    [self.outQueue appendData:d];
+    self.lastTxTime = [NSDate date];
+    [self pump];
 }
 
 - (void)writeFrameType:(uint8_t)type payload:(NSData *)payload label:(NSString *)label {
@@ -203,6 +252,10 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         if (p[3]) mode = p[4] ? 2 : 1;
         int level = p[6];
         [self log:@"状态: %@ level=%d", mode == 2 ? @"环境声" : (mode == 1 ? @"降噪" : @"关闭"), level];
+        if (self.lastCommit && mode == self.lastCommitMode) {
+            [self.resendTimer invalidate]; self.resendTimer = nil;
+            self.lastCommit = nil;
+        }
         if (self.stateHandler) self.stateHandler(mode, level);
         return;
     }
@@ -228,19 +281,58 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     return [NSData dataWithBytes:b length:9];
 }
 
+- (void)scheduleResendForPayload:(NSData *)payload mode:(int)mode {
+    [self.resendTimer invalidate];
+    self.lastCommit = payload;
+    self.lastCommitMode = mode;
+    self.resendCount = 0;
+    self.resendTimer = [NSTimer scheduledTimerWithTimeInterval:0.8 target:self selector:@selector(resendTick) userInfo:nil repeats:NO];
+}
+
+- (void)resendTick {
+    if (!self.session || !self.lastCommit) return;
+    if (self.resendCount >= 2) { [self log:@"命令无回应，放弃"]; return; }
+    self.resendCount++;
+    [self log:@"补发第 %d 次", self.resendCount];
+    [self writeFrameType:0x0C payload:self.lastCommit label:@"RESEND"];
+    self.resendTimer = [NSTimer scheduledTimerWithTimeInterval:0.8 target:self selector:@selector(resendTick) userInfo:nil repeats:NO];
+}
+
+- (void)previewTick {
+    if (self.pendingPreview < 0) { self.previewTimer = nil; return; }
+    int lv = self.pendingPreview;
+    self.pendingPreview = -1;
+    [self writeFrameType:0x0C payload:[self ambientPayload:(uint8_t)lv commit:NO nc:NO off:NO]
+                   label:[NSString stringWithFormat:@"AMBIENT %d(拖动)", lv]];
+}
+
 - (void)setAmbient:(uint8_t)level commit:(BOOL)commit {
     self.lastLevel = level;
-    [self writeFrameType:0x0C payload:[self ambientPayload:level commit:commit nc:NO off:NO]
-                   label:[NSString stringWithFormat:@"AMBIENT %d%@", level, commit ? @"" : @"(拖动)"]];
+    if (!commit) {
+        self.pendingPreview = level;
+        if (!self.previewTimer) {
+            self.previewTimer = [NSTimer scheduledTimerWithTimeInterval:0.10 target:self selector:@selector(previewTick) userInfo:nil repeats:YES];
+        }
+        return;
+    }
+    [self.previewTimer invalidate]; self.previewTimer = nil;
+    self.pendingPreview = -1;
+    NSData *p = [self ambientPayload:level commit:YES nc:NO off:NO];
+    [self writeFrameType:0x0C payload:p label:[NSString stringWithFormat:@"AMBIENT %d", level]];
+    [self scheduleResendForPayload:p mode:2];
 }
 
 - (void)setNCWithLevel:(uint8_t)level {
     self.lastLevel = level;
-    [self writeFrameType:0x0C payload:[self ambientPayload:level commit:YES nc:YES off:NO] label:@"NC"];
+    NSData *p = [self ambientPayload:level commit:YES nc:YES off:NO];
+    [self writeFrameType:0x0C payload:p label:@"NC"];
+    [self scheduleResendForPayload:p mode:1];
 }
 
 - (void)setOffWithLevel:(uint8_t)level {
-    [self writeFrameType:0x0C payload:[self ambientPayload:level commit:YES nc:NO off:YES] label:@"OFF"];
+    NSData *p = [self ambientPayload:level commit:YES nc:NO off:YES];
+    [self writeFrameType:0x0C payload:p label:@"OFF"];
+    [self scheduleResendForPayload:p mode:0];
 }
 
 @end
