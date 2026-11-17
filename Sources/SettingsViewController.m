@@ -1,6 +1,8 @@
 #import "SettingsViewController.h"
 #import "AppSettings.h"
 
+static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios";
+
 @interface SettingsViewController ()
 @property (nonatomic, strong) UISwitch *fileSwitch;
 @property (nonatomic, strong) UISwitch *showSwitch;
@@ -31,13 +33,33 @@
     UIStackView *fileRow = [self rowWith:fileLabel control:self.fileSwitch];
     UIStackView *showRow = [self rowWith:showLabel control:self.showSwitch];
 
+    UILabel *verLabel = [self labelWithText:[self versionText] detail:@"适配 WH-1000XM6 / iPhone XR iOS 13"];
+
+    UIButton *repoBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [repoBtn setTitle:@"GitHub 项目主页" forState:UIControlStateNormal];
+    [repoBtn.titleLabel setFont:[UIFont systemFontOfSize:15]];
+    [repoBtn setTitleColor:[UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
+    [repoBtn addTarget:self action:@selector(repoTapped) forControlEvents:UIControlEventTouchUpInside];
+    repoBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+
+    UILabel *repoURL = [[UILabel alloc] init];
+    repoURL.text = kRepoURL;
+    repoURL.font = [UIFont systemFontOfSize:11];
+    repoURL.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+    repoURL.numberOfLines = 1;
+    repoURL.adjustsFontSizeToFitWidth = YES;
+    repoURL.minimumScaleFactor = 0.7;
+    repoURL.userInteractionEnabled = YES;
+    [repoURL addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(repoTapped)]];
+    repoURL.textAlignment = NSTextAlignmentLeft;
+
     UIButton *done = [UIButton buttonWithType:UIButtonTypeSystem];
     [done setTitle:@"完成" forState:UIControlStateNormal];
     [done.titleLabel setFont:[UIFont boldSystemFontOfSize:17]];
     [done setTitleColor:[UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
     [done addTarget:self action:@selector(doneTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, fileRow, showRow, done]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, fileRow, showRow, verLabel, repoBtn, repoURL, done]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 26;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -72,6 +94,26 @@
     [label setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
     [control setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     return row;
+}
+
+- (NSString *)versionText {
+    NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
+    NSString *v = info[@"CFBundleShortVersionString"] ?: @"?";
+    NSString *b = info[@"CFBundleVersion"] ?: @"?";
+    return [NSString stringWithFormat:@"版本 %@（构建 %@）", v, b];
+}
+
+- (void)repoTapped {
+    NSURL *url = [NSURL URLWithString:kRepoURL];
+    if (!url) return;
+    if ([[UIApplication sharedApplication] respondsToSelector:@selector(openURL:options:completionHandler:)]) {
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [[UIApplication sharedApplication] openURL:url];
+#pragma clang diagnostic pop
+    }
 }
 
 - (void)fileToggled {
