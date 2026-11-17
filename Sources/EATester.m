@@ -38,7 +38,11 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) NSFileHandle *logFile;
 @property (nonatomic, strong) NSDateFormatter *df;
 @property (nonatomic) BOOL connNotified;
+@property (nonatomic, strong) NSTimer *initRetryTimer;
+@property (nonatomic) int initRetryCount;
+@property (nonatomic) BOOL linkReady;
 - (void)queryState;
+- (void)sendInitNow;
 @property (nonatomic) uint8_t seq;
 @property (nonatomic, strong) NSMutableData *outQueue;
 @property (nonatomic) BOOL outOpened;
@@ -107,7 +111,9 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     EAAccessory *a = n.userInfo[EAAccessoryKey];
     [self log:@"配件接入: %@", a.name];
     self.accessory = a;
-    [self openSession];
+    // 刚接入时耳机链路还没就绪，立即开会话会导致 INIT 丢进黑洞，稍等再开
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(openSession) object:nil];
+    [self performSelector:@selector(openSession) withObject:nil afterDelay:1.2];
 }
 
 - (void)accDisconnected:(NSNotification *)n {
@@ -146,6 +152,10 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     self.outOpened = NO;
     self.initSent = NO;
     self.handshakeReplied = NO;
+    self.linkReady = NO;
+    self.initRetryCount = 0;
+    [self.initRetryTimer invalidate];
+    self.initRetryTimer = nil;
     self.seq = 0;
     [in open];
     [out open];
@@ -180,7 +190,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         [self pump];
         if (!self.initSent) {
             self.initSent = YES;
-            [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2] label:@"INIT"];
+            [self sendInitNow];
         }
         return;
     }
@@ -231,6 +241,24 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [self pump];
 }
 
+- (void)sendInitNow {
+    [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2] label:@"INIT"];
+    [self.initRetryTimer invalidate];
+    self.initRetryTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(initRetryTick) userInfo:nil repeats:NO];
+}
+
+- (void)initRetryTick {
+    if (!self.session) return;
+    if (self.linkReady) return;
+    if (self.initRetryCount >= 4) {
+        [self log:@"耳机无响应，放弃 INIT"];
+        return;
+    }
+    self.initRetryCount++;
+    [self log:@"链路未就绪，重发 INIT (%d)", self.initRetryCount];
+    [self sendInitNow];
+}
+
 - (void)writeFrameType:(uint8_t)type payload:(NSData *)payload label:(NSString *)label {
     if (!self.session) return;
     NSData *f = [self frameOfType:type payload:payload];
@@ -256,6 +284,12 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         NSUInteger total = 7 + len + 2;
         if (self.rxBuf.length < total) return;
         uint8_t type = p[1], fseq = p[2];
+        if (!self.linkReady) {
+            self.linkReady = YES;
+            [self.initRetryTimer invalidate];
+            self.initRetryTimer = nil;
+            [self log:@"链路就绪"];
+        }
         NSData *payload = [self.rxBuf subdataWithRange:NSMakeRange(7, len)];
         [self.rxBuf replaceBytesInRange:NSMakeRange(0, total) withBytes:NULL length:0];
         if (type == 0x01) continue;  // 对端 ACK
