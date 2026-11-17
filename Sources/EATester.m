@@ -40,6 +40,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) NSMutableData *outQueue;
 @property (nonatomic) BOOL outOpened;
 @property (nonatomic) BOOL initSent;
+@property (nonatomic) BOOL handshakeReplied;
 @property (nonatomic, strong) NSTimer *previewTimer;
 @property (nonatomic) int pendingPreview;
 @property (nonatomic, strong) NSTimer *resendTimer;
@@ -137,6 +138,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [self.outQueue setLength:0];
     self.outOpened = NO;
     self.initSent = NO;
+    self.handshakeReplied = NO;
     self.seq = 0;
     [in open];
     [out open];
@@ -220,7 +222,8 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 }
 
 - (void)sendAck:(uint8_t)seq {
-    NSData *f = MDRFrame(0x01, seq, [NSData data]);
+    uint8_t ackSeq = (uint8_t)((seq + 1) & 0x01);
+    NSData *f = MDRFrame(0x01, ackSeq, [NSData data]);
     [self writeRaw:f label:@"ACK"];
 }
 
@@ -247,6 +250,14 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 - (void)handleType:(uint8_t)type payload:(NSData *)payload {
     const uint8_t *p = payload.bytes;
     NSUInteger n = payload.length;
+    if (type == 0x0C && n >= 4 && p[0] == 0x01 && p[1] == 0x00 && p[2] == 0x03 && p[3] == 0x00) {
+        [self log:@"握手请求"];
+        if (!self.handshakeReplied) {
+            self.handshakeReplied = YES;
+            [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x02,0x00} length:2] label:@"HANDSHAKE"];
+        }
+        return;
+    }
     if (type == 0x0C && n >= 9 && p[0] == 0x69 && p[1] == 0x19) {
         int mode = 0;
         if (p[3]) mode = p[4] ? 2 : 1;
