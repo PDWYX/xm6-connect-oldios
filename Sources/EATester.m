@@ -11,11 +11,33 @@ static NSString *EAHex(NSData *d) {
     return s;
 }
 
+// MDR v2 帧: 3E | type | seq(2) | len(4 BE) | payload | checksum | 3C
+static NSData *MDRFrame(uint8_t type, uint16_t seq, NSData *payload) {
+    NSMutableData *d = [NSMutableData data];
+    uint8_t hdr = 0x3E;
+    [d appendBytes:&hdr length:1];
+    [d appendBytes:&type length:1];
+    uint8_t s[2] = { (uint8_t)(seq >> 8), (uint8_t)(seq & 0xFF) };
+    [d appendBytes:s length:2];
+    uint32_t len = (uint32_t)payload.length;
+    uint8_t l[4] = { (uint8_t)(len >> 24), (uint8_t)(len >> 16), (uint8_t)(len >> 8), (uint8_t)len };
+    [d appendBytes:l length:4];
+    [d appendData:payload];
+    uint8_t sum = 0;
+    const uint8_t *p = d.bytes;
+    for (NSUInteger i = 0; i < d.length; i++) sum = (uint8_t)(sum + p[i]);
+    uint8_t ck = sum, end = 0x3C;
+    [d appendBytes:&ck length:1];
+    [d appendBytes:&end length:1];
+    return d;
+}
+
 @interface EATester () <NSStreamDelegate>
 @property (nonatomic, strong) EAAccessory *accessory;
 @property (nonatomic, strong) EASession *session;
 @property (nonatomic, strong) NSMutableData *rxBuf;
-@property (nonatomic) uint16_t txSeq;
+@property (nonatomic, strong) NSFileHandle *logFile;
+@property (nonatomic) uint16_t seq;
 @end
 
 @implementation EATester
@@ -27,11 +49,29 @@ static NSString *EAHex(NSData *d) {
     va_end(args);
     if (self.logger) self.logger(s);
     NSLog(@"[XM6EA] %@", s);
+    [self fileLog:s];
+}
+
+- (void)fileLog:(NSString *)s {
+    if (self.logFile == nil) {
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *path = [docs stringByAppendingPathComponent:@"xm6.log"];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+        }
+        self.logFile = [NSFileHandle fileHandleForWritingAtPath:path];
+        [self.logFile seekToEndOfFile];
+    }
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"HH:mm:ss";
+    NSString *line = [NSString stringWithFormat:@"[%@] EA %@\n", [df stringFromDate:[NSDate date]], s];
+    [self.logFile writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [self.logFile synchronizeFile];
 }
 
 - (void)begin {
-    self.rxBuf = [NSMutableData data];
-    self.txSeq = 0xee00;
+    if (!self.rxBuf) self.rxBuf = [NSMutableData data];
+    self.seq = 0;
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(accConnected:) name:EAAccessoryDidConnectNotification object:nil];
     [nc addObserver:self selector:@selector(accDisconnected:) name:EAAccessoryDidDisconnectNotification object:nil];
@@ -40,7 +80,7 @@ static NSString *EAHex(NSData *d) {
     NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
     [self log:@"EA 已连配件数: %lu", (unsigned long)accs.count];
     for (EAAccessory *a in accs) [self dumpAccessory:a];
-    if (accs.count == 0) [self log:@"(没有 EA 配件，点“挑配件”让系统弹出选择器)"];
+    if (accs.count && !self.session) { self.accessory = accs.firstObject; [self openSession]; }
 }
 
 - (void)dumpAccessory:(EAAccessory *)a {
@@ -83,6 +123,7 @@ static NSString *EAHex(NSData *d) {
 }
 
 - (void)openSession {
+    if (self.session) { [self log:@"会话已存在，先关闭"]; [self closeSession]; }
     if (!self.accessory) {
         NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
         if (accs.count) self.accessory = accs.firstObject;
@@ -98,8 +139,7 @@ static NSString *EAHex(NSData *d) {
     [in scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
     [out scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
     [in open]; [out open];
-    [self log:@"流已打开 in=%@ out=%@", in.streamStatus == NSStreamStatusOpen ? @"open" : @(in.streamStatus),
-                                       out.streamStatus == NSStreamStatusOpen ? @"open" : @(out.streamStatus)];
+    [self log:@"流已打开 in=%ld out=%ld", (long)in.streamStatus, (long)out.streamStatus];
 }
 
 - (void)closeSession {
@@ -112,7 +152,7 @@ static NSString *EAHex(NSData *d) {
 
 - (void)stream:(NSStream *)stream handleEvent:(NSStreamEvent)event {
     if (event == NSStreamEventHasBytesAvailable && stream == self.session.inputStream) {
-        uint8_t buf[512];
+        uint8_t buf[1024];
         NSInteger n = [(NSInputStream *)stream read:buf maxLength:sizeof(buf)];
         if (n > 0) {
             NSData *d = [NSData dataWithBytes:buf length:(NSUInteger)n];
@@ -128,26 +168,47 @@ static NSString *EAHex(NSData *d) {
     }
 }
 
-- (void)writeRaw:(NSData *)d {
-    if (!self.session) { [self log:@"没有会话，先开会话"]; return; }
+- (void)writeRaw:(NSData *)d label:(NSString *)label {
+    if (!self.session) { [self log:@"%@: 没有会话", label]; return; }
     NSOutputStream *out = self.session.outputStream;
-    if (out.streamStatus != NSStreamStatusOpen) { [self log:@"输出流未打开 status=%ld", (long)out.streamStatus]; return; }
+    if (out.streamStatus != NSStreamStatusOpen) { [self log:@"%@: 输出流未打开 status=%ld", label, (long)out.streamStatus]; return; }
     NSInteger n = [out write:d.bytes maxLength:d.length];
-    [self log:@"TX %ld/%lu: %@", (long)n, (unsigned long)d.length, EAHex(d)];
+    [self log:@"%@ TX %ld/%lu: %@", label, (long)n, (unsigned long)d.length, EAHex(d)];
 }
 
-// 送一个最小 iAP2 包，看耳机/iOS 是否理我们
-- (void)sendTest {
-    uint8_t pkt[] = {0xFF, 0x5A, 0x00, 0x04, 0x40, 0x00, 0x01, 0x00};
-    [self writeRaw:[NSData dataWithBytes:pkt length:sizeof(pkt)]];
+- (void)sendLinkSync {
+    uint8_t p[] = {0xFF, 0x55, 0x02, 0x00, 0xEE, 0x10};
+    [self writeRaw:[NSData dataWithBytes:p length:sizeof(p)] label:@"LINK"];
+}
+
+- (void)sendInit {
+    self.seq = 0;
+    [self writeRaw:MDRFrame(0x0C, 0, [NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2]) label:@"INIT"];
 }
 
 - (void)sendAmbient:(int)level {
-    [self log:@"(EA) 环境声 %d — 具体帧待定", level];
+    uint8_t pl[] = {0x68, 0x15, 0x01, 0x00, 0x01, 0x00, (uint8_t)level};
+    [self writeRaw:MDRFrame(0x0C, self.seq++, [NSData dataWithBytes:pl length:sizeof(pl)]) label:[NSString stringWithFormat:@"AMB%d", level]];
 }
 
 - (void)sendNC {
-    [self log:@"(EA) 降噪 — 具体帧待定"];
+    uint8_t pl[] = {0x68, 0x15, 0x01, 0x01, 0x00, 0x00, 0x00};
+    [self writeRaw:MDRFrame(0x0C, self.seq++, [NSData dataWithBytes:pl length:sizeof(pl)]) label:@"NC"];
+}
+
+- (void)sendOff {
+    uint8_t pl[] = {0x68, 0x15, 0x01, 0x00, 0x00, 0x00, 0x00};
+    [self writeRaw:MDRFrame(0x0C, self.seq++, [NSData dataWithBytes:pl length:sizeof(pl)]) label:@"OFF"];
+}
+
+// 带 iAP2 外层的 INIT：ff5a | len(2) | 40 | seq(2) | hck | payload | ck
+- (void)sendWrappedInit {
+    NSData *mdr = MDRFrame(0x0C, 0, [NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2]);
+    NSMutableData *p = [NSMutableData data];
+    uint8_t pre[] = {0x2B, 0x00, 0x02};
+    [p appendBytes:pre length:3];
+    [p appendData:mdr];
+    [self writeRaw:p label:@"WRAPPED-INIT"];
 }
 
 @end

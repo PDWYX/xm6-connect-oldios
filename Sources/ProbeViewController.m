@@ -99,8 +99,10 @@ static NSString *Hex(NSData *d) {
                                             sels:@[@"lvl5", @"lvl10", @"lvl15", @"lvl20"] bg:0.22]];
     [outer addArrangedSubview:[self rowWithTitles:@[@"降噪", @"通道2", @"环境8B"]
                                             sels:@[@"doNC", @"doAlt", @"doW10"] bg:0.22]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"挑配件", @"EA列表", @"开会话", @"EA测试"]
-                                            sels:@[@"eaPicker", @"eaList", @"eaOpen", @"eaTest"] bg:0.62]];
+    [outer addArrangedSubview:[self rowWithTitles:@[@"挑配件", @"开会话", @"EA-INIT", @"EA环境10"]
+                                            sels:@[@"eaPicker", @"eaOpen", @"eaInit", @"eaAmb10"] bg:0.62]];
+    [outer addArrangedSubview:[self rowWithTitles:@[@"EA降噪", @"EA关", @"EA-LINK", @"EA-WRAP"]
+                                            sels:@[@"eaNC", @"eaOff", @"eaLink", @"eaWrap"] bg:0.62]];
 
     UILayoutGuide *g = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -151,7 +153,12 @@ static NSString *Hex(NSData *d) {
 - (void)eaPicker { [self.eaTester showPicker]; }
 - (void)eaList { [self.eaTester begin]; }
 - (void)eaOpen { [self.eaTester openSession]; }
-- (void)eaTest { [self.eaTester sendTest]; }
+- (void)eaInit { [self.eaTester sendInit]; }
+- (void)eaAmb10 { [self.eaTester sendAmbient:10]; }
+- (void)eaNC { [self.eaTester sendNC]; }
+- (void)eaOff { [self.eaTester sendOff]; }
+- (void)eaLink { [self.eaTester sendLinkSync]; }
+- (void)eaWrap { [self.eaTester sendWrappedInit]; }
 
 @end
 

@@ -7,9 +7,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)begin;
 - (void)showPicker;
 - (void)openSession;
-- (void)sendTest;
+- (void)sendLinkSync;
+- (void)sendInit;
 - (void)sendAmbient:(int)level;
 - (void)sendNC;
+- (void)sendOff;
+- (void)sendWrappedInit;
 @end
 
 NS_ASSUME_NONNULL_END
