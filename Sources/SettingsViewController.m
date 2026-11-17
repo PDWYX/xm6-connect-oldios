@@ -1,5 +1,6 @@
 #import "SettingsViewController.h"
 #import "AppSettings.h"
+#import "BuildInfo.h"
 
 static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios";
 
@@ -32,6 +33,13 @@ static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios"
 
     UIStackView *fileRow = [self rowWith:fileLabel control:self.fileSwitch];
     UIStackView *showRow = [self rowWith:showLabel control:self.showSwitch];
+
+    UIButton *exportLog = [UIButton buttonWithType:UIButtonTypeSystem];
+    [exportLog setTitle:@"导出日志" forState:UIControlStateNormal];
+    [exportLog.titleLabel setFont:[UIFont systemFontOfSize:16]];
+    [exportLog setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [exportLog addTarget:self action:@selector(exportLogTapped) forControlEvents:UIControlEventTouchUpInside];
+    exportLog.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
 
     UIButton *clearLog = [UIButton buttonWithType:UIButtonTypeSystem];
     [clearLog setTitle:@"清除文件日志" forState:UIControlStateNormal];
@@ -70,7 +78,7 @@ static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios"
     [done setTitleColor:[UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
     [done addTarget:self action:@selector(doneTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, fileRow, showRow, clearLog, verLabel, repoBtn, repoURL, done]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, fileRow, showRow, exportLog, clearLog, verLabel, repoBtn, repoURL, done]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 26;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -111,7 +119,7 @@ static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios"
     NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
     NSString *v = info[@"CFBundleShortVersionString"] ?: @"?";
     NSString *b = info[@"CFBundleVersion"] ?: @"?";
-    return [NSString stringWithFormat:@"版本 %@（构建 %@）", v, b];
+    return [NSString stringWithFormat:@"版本 %@+%@（%@）", v, b, kBuildSHA];
 }
 
 - (void)repoTapped {
@@ -125,6 +133,32 @@ static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios"
         [[UIApplication sharedApplication] openURL:url];
 #pragma clang diagnostic pop
     }
+}
+
+- (NSString *)logFilePath {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:@"xm6.log"];
+}
+
+- (void)exportLogTapped {
+    NSString *path = [self logFilePath];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *attrs = [fm attributesOfItemAtPath:path error:NULL];
+    if (!attrs || [attrs fileSize] == 0) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:nil
+                                                                  message:@"暂无日志文件，请先开启「文件输出日志」并操作几次。"
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:a animated:YES completion:nil];
+        return;
+    }
+    NSURL *url = [NSURL fileURLWithPath:path];
+    UIActivityViewController *vc = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+    if (vc.popoverPresentationController) {
+        vc.popoverPresentationController.sourceView = self.view;
+        vc.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    }
+    [self presentViewController:vc animated:YES completion:nil];
 }
 
 - (void)clearLogTapped {

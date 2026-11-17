@@ -7,6 +7,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Inject build info
+        run: |
+          SHA=$(git rev-parse --short=7 HEAD)
+          echo "SHA=$SHA"
+          printf '#ifndef BuildInfo_h\n#define BuildInfo_h\n#define kBuildSHA @"%s"\n#endif\n' "$SHA" > Sources/BuildInfo.h
+          cat Sources/BuildInfo.h
       - name: Install xcodegen
         run: brew install xcodegen
       - name: Generate project

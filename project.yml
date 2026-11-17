@@ -2,7 +2,7 @@ name: XM6Control
 options:
   bundleIdPrefix: com.pdwyx
   deploymentTarget:
-    iOS: "13.0"
+    iOS: "11.0"
 targets:
   XM6Control:
     type: application
@@ -14,14 +14,14 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: XM6
-        CFBundleShortVersionString: "0.19"
-        CFBundleVersion: "19"
+        CFBundleShortVersionString: "0.20"
+        CFBundleVersion: "20"
         UIUserInterfaceStyle: Dark
         UILaunchScreen: {}
         UILaunchStoryboardName: LaunchScreen
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiresFullScreen: true
-        MinimumOSVersion: "13.0"
+        MinimumOSVersion: "11.0"
         UISupportedExternalAccessoryProtocols:
           - jp.co.sony.songpal.mdr.link2
           - com.sony.sca.servicelinkage
