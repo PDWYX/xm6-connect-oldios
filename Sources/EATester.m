@@ -1,5 +1,6 @@
 #import "EATester.h"
 #import <ExternalAccessory/ExternalAccessory.h>
+#import "AppSettings.h"
 
 static NSString *const kSonyProtocol = @"jp.co.sony.songpal.mdr.link2";
 
@@ -35,8 +36,9 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) EASession *session;
 @property (nonatomic, strong) NSMutableData *rxBuf;
 @property (nonatomic, strong) NSFileHandle *logFile;
+@property (nonatomic, strong) NSDateFormatter *df;
+@property (nonatomic) BOOL connNotified;
 @property (nonatomic) uint8_t seq;
-@property (nonatomic) int lastLevel;
 @property (nonatomic, strong) NSMutableData *outQueue;
 @property (nonatomic) BOOL outOpened;
 @property (nonatomic) BOOL initSent;
@@ -59,33 +61,37 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     va_start(args, fmt);
     NSString *s = [[NSString alloc] initWithFormat:fmt arguments:args];
     va_end(args);
+    if (![AppSettings showLogEnabled] && ![AppSettings fileLogEnabled]) return;
     if (self.logger) self.logger(s);
-    NSLog(@"[XM6EA] %@", s);
-    [self fileLog:s];
+    if ([AppSettings fileLogEnabled]) [self fileLog:s];
 }
 
 - (void)fileLog:(NSString *)s {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *path = [docs stringByAppendingPathComponent:@"xm6.log"];
     if (self.logFile == nil) {
-        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        NSString *path = [docs stringByAppendingPathComponent:@"xm6.log"];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+        if (![fm fileExistsAtPath:path]) [fm createFileAtPath:path contents:nil attributes:nil];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:path error:nil];
+        if ([attrs fileSize] > 1024 * 1024) {
+            [fm removeItemAtPath:path error:nil];
+            [fm createFileAtPath:path contents:nil attributes:nil];
         }
         self.logFile = [NSFileHandle fileHandleForWritingAtPath:path];
         [self.logFile seekToEndOfFile];
     }
-    NSDateFormatter *df = [[NSDateFormatter alloc] init];
-    df.dateFormat = @"HH:mm:ss";
-    NSString *line = [NSString stringWithFormat:@"[%@] EA %@\n", [df stringFromDate:[NSDate date]], s];
+    if (self.df == nil) {
+        self.df = [[NSDateFormatter alloc] init];
+        self.df.dateFormat = @"HH:mm:ss";
+    }
+    NSString *line = [NSString stringWithFormat:@"[%@] EA %@\n", [self.df stringFromDate:[NSDate date]], s];
     [self.logFile writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-    [self.logFile synchronizeFile];
 }
 
 - (void)begin {
     if (!self.rxBuf) self.rxBuf = [NSMutableData data];
     if (!self.outQueue) self.outQueue = [NSMutableData data];
     self.pendingPreview = -1;
-    self.lastLevel = 10;
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(accConnected:) name:EAAccessoryDidConnectNotification object:nil];
     [nc addObserver:self selector:@selector(accDisconnected:) name:EAAccessoryDidDisconnectNotification object:nil];
@@ -143,6 +149,13 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [in open];
     [out open];
     [self log:@"会话已打开 %@", proto];
+    [self notifyConnected:YES];
+}
+
+- (void)notifyConnected:(BOOL)c {
+    if (self.connNotified == c) return;
+    self.connNotified = c;
+    if (self.connectionHandler) self.connectionHandler(c);
 }
 
 - (void)closeSession {
@@ -151,6 +164,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     self.pendingPreview = -1;
     self.outOpened = NO;
     if (self.outQueue) [self.outQueue setLength:0];
+    [self notifyConnected:NO];
     if (self.session) {
         [[self.session inputStream] close];
         [[self.session outputStream] close];
@@ -222,6 +236,8 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [self log:@"TX %@ %@", label, EAHex(payload)];
     [self writeRaw:f label:label];
 }
+
+- (void)queryState;
 
 - (void)sendAck:(uint8_t)seq {
     uint8_t ackSeq = (uint8_t)((seq + 1) & 0x01);
@@ -334,7 +350,6 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 }
 
 - (void)setAmbient:(uint8_t)level commit:(BOOL)commit {
-    self.lastLevel = level;
     if (!commit) {
         self.pendingPreview = level;
         if (!self.previewTimer) {

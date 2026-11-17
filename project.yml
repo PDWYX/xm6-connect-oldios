@@ -18,8 +18,6 @@ targets:
         CFBundleVersion: "1"
         UILaunchScreen: {}
         UILaunchStoryboardName: LaunchScreen
-        NSBluetoothAlwaysUsageDescription: "需要蓝牙连接索尼 WH-1000XM6 以调节环境声"
-        NSBluetoothPeripheralUsageDescription: "需要蓝牙连接索尼 WH-1000XM6 以调节环境声"
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiresFullScreen: true
         MinimumOSVersion: "13.0"

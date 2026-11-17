@@ -4,7 +4,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface EATester : NSObject
 @property (nonatomic, copy) void (^logger)(NSString *line);
-@property (nonatomic, copy) void (^stateHandler)(int mode, int level); // mode: 0=off 1=NC 2=AMB
+@property (nonatomic, copy) void (^stateHandler)(int mode, int level);
+@property (nonatomic, copy) void (^connectionHandler)(BOOL connected); // mode: 0=off 1=NC 2=AMB
 @property (nonatomic, readonly) BOOL connected;
 - (void)begin;
 - (void)openSession;
