@@ -11,21 +11,20 @@ static NSString *EAHex(NSData *d) {
     return s;
 }
 
-// MDR v2 帧: 3E | type | seq(2) | len(4 BE) | payload | checksum | 3C
-static NSData *MDRFrame(uint8_t type, uint16_t seq, NSData *payload) {
+// MDR v2 帧(实测): 3E | type | seq(1) | len(4 BE) | payload | checksum | 3C
+// checksum = 从 type 到 payload 末字节的累加和
+static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     NSMutableData *d = [NSMutableData data];
-    uint8_t hdr = 0x3E;
-    [d appendBytes:&hdr length:1];
-    [d appendBytes:&type length:1];
-    uint8_t s[2] = { (uint8_t)(seq >> 8), (uint8_t)(seq & 0xFF) };
-    [d appendBytes:s length:2];
+    uint8_t head[2] = {0x3E, type};
+    [d appendBytes:head length:2];
+    [d appendBytes:&seq length:1];
     uint32_t len = (uint32_t)payload.length;
     uint8_t l[4] = { (uint8_t)(len >> 24), (uint8_t)(len >> 16), (uint8_t)(len >> 8), (uint8_t)len };
     [d appendBytes:l length:4];
     [d appendData:payload];
     uint8_t sum = 0;
-    const uint8_t *p = d.bytes;
-    for (NSUInteger i = 0; i < d.length; i++) sum = (uint8_t)(sum + p[i]);
+    const uint8_t *p = d.bytes + 1; // 跳过 0x3E
+    for (NSUInteger i = 1; i < d.length; i++) sum = (uint8_t)(sum + p[i - 1]);
     uint8_t ck = sum, end = 0x3C;
     [d appendBytes:&ck length:1];
     [d appendBytes:&end length:1];
@@ -37,7 +36,7 @@ static NSData *MDRFrame(uint8_t type, uint16_t seq, NSData *payload) {
 @property (nonatomic, strong) EASession *session;
 @property (nonatomic, strong) NSMutableData *rxBuf;
 @property (nonatomic, strong) NSFileHandle *logFile;
-@property (nonatomic) uint16_t seq;
+@property (nonatomic) uint8_t seq;
 @end
 
 @implementation EATester
@@ -157,7 +156,7 @@ static NSData *MDRFrame(uint8_t type, uint16_t seq, NSData *payload) {
         if (n > 0) {
             NSData *d = [NSData dataWithBytes:buf length:(NSUInteger)n];
             [self.rxBuf appendData:d];
-            [self log:@"RX %ld: %@", (long)n, EAHex(d)];
+            [self parseFrames];
         }
     } else if (event == NSStreamEventErrorOccurred) {
         [self log:@"流错误: %@", stream.streamError.localizedDescription];
@@ -209,6 +208,33 @@ static NSData *MDRFrame(uint8_t type, uint16_t seq, NSData *payload) {
     [p appendBytes:pre length:3];
     [p appendData:mdr];
     [self writeRaw:p label:@"WRAPPED-INIT"];
+}
+
+- (void)parseFrames {
+    while (self.rxBuf.length >= 8) {
+        const uint8_t *p = self.rxBuf.bytes;
+        if (p[0] != 0x3E) {
+            [self log:@"RX 非帧数据(%luB): %@", (unsigned long)self.rxBuf.length, EAHex(self.rxBuf)];
+            [self.rxBuf setLength:0];
+            return;
+        }
+        uint32_t len = ((uint32_t)p[3] << 24) | ((uint32_t)p[4] << 16) | ((uint32_t)p[5] << 8) | p[6];
+        NSUInteger total = 1 + 1 + 1 + 4 + len + 1 + 1;
+        if (self.rxBuf.length < total) return;
+        NSData *frame = [self.rxBuf subdataWithRange:NSMakeRange(0, total)];
+        [self.rxBuf replaceBytesInRange:NSMakeRange(0, total) withBytes:NULL length:0];
+        NSData *payload = [frame subdataWithRange:NSMakeRange(7, len)];
+        [self log:@"RX type=%02X seq=%02X len=%lu %@", p[1], p[2], (unsigned long)len, EAHex(payload)];
+    }
+}
+
+- (void)eaRun {
+    [self log:@"=== 全流程 INIT -> 环境声10 ==="];
+    self.seq = 0;
+    [self sendInit];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self sendAmbient:10];
+    });
 }
 
 @end

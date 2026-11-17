@@ -101,8 +101,10 @@ static NSString *Hex(NSData *d) {
                                             sels:@[@"doNC", @"doAlt", @"doW10"] bg:0.22]];
     [outer addArrangedSubview:[self rowWithTitles:@[@"挑配件", @"开会话", @"EA-INIT", @"EA环境10"]
                                             sels:@[@"eaPicker", @"eaOpen", @"eaInit", @"eaAmb10"] bg:0.62]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"EA降噪", @"EA关", @"EA-LINK", @"EA-WRAP"]
+    [outer addArrangedSubview:[self rowWithTitles:@[@"EA降噪", @"EA关", @"EA-KILL", @"EA-WRAP"]
                                             sels:@[@"eaNC", @"eaOff", @"eaLink", @"eaWrap"] bg:0.62]];
+    [outer addArrangedSubview:[self rowWithTitles:@[@"EA全流程", @"EA环境1", @"EA环境20", @"清屏"]
+                                            sels:@[@"eaRun", @"eaAmb1", @"eaAmb20", @"eaClear"] bg:0.72]];
 
     UILayoutGuide *g = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -159,6 +161,10 @@ static NSString *Hex(NSData *d) {
 - (void)eaOff { [self.eaTester sendOff]; }
 - (void)eaLink { [self.eaTester sendLinkSync]; }
 - (void)eaWrap { [self.eaTester sendWrappedInit]; }
+- (void)eaRun { [self.eaTester eaRun]; }
+- (void)eaAmb1 { [self.eaTester sendAmbient:1]; }
+- (void)eaAmb20 { [self.eaTester sendAmbient:20]; }
+- (void)eaClear { [self appendLog:@"----------- 清屏 -----------"]; }
 
 @end
 

@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)sendNC;
 - (void)sendOff;
 - (void)sendWrappedInit;
+- (void)eaRun;
 @end
 
 NS_ASSUME_NONNULL_END
