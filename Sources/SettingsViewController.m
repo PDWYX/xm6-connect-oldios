@@ -33,7 +33,18 @@ static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios"
     UIStackView *fileRow = [self rowWith:fileLabel control:self.fileSwitch];
     UIStackView *showRow = [self rowWith:showLabel control:self.showSwitch];
 
-    UILabel *verLabel = [self labelWithText:[self versionText] detail:@"适配 WH-1000XM6 / iPhone XR iOS 13"];
+    UIButton *clearLog = [UIButton buttonWithType:UIButtonTypeSystem];
+    [clearLog setTitle:@"清除文件日志" forState:UIControlStateNormal];
+    [clearLog.titleLabel setFont:[UIFont systemFontOfSize:16]];
+    [clearLog setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [clearLog addTarget:self action:@selector(clearLogTapped) forControlEvents:UIControlEventTouchUpInside];
+    clearLog.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+
+    UILabel *verLabel = [[UILabel alloc] init];
+    verLabel.text = [self versionText];
+    verLabel.textColor = [UIColor whiteColor];
+    verLabel.font = [UIFont systemFontOfSize:15];
+    verLabel.textAlignment = NSTextAlignmentCenter;
 
     UIButton *repoBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [repoBtn setTitle:@"GitHub 项目主页" forState:UIControlStateNormal];
@@ -59,7 +70,7 @@ static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios"
     [done setTitleColor:[UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
     [done addTarget:self action:@selector(doneTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, fileRow, showRow, verLabel, repoBtn, repoURL, done]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, fileRow, showRow, clearLog, verLabel, repoBtn, repoURL, done]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 26;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -114,6 +125,17 @@ static NSString *const kRepoURL = @"https://github.com/PDWYX/xm6-connect-oldios"
         [[UIApplication sharedApplication] openURL:url];
 #pragma clang diagnostic pop
     }
+}
+
+- (void)clearLogTapped {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
+                                                                   message:@"是否清除本地文件输出日志？"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"是" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"XM6ClearFileLog" object:nil];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"否" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)fileToggled {

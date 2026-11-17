@@ -14,8 +14,9 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: XM6
-        CFBundleShortVersionString: "0.18"
-        CFBundleVersion: "18"
+        CFBundleShortVersionString: "0.19"
+        CFBundleVersion: "19"
+        UIUserInterfaceStyle: Dark
         UILaunchScreen: {}
         UILaunchStoryboardName: LaunchScreen
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

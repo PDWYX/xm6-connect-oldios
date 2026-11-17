@@ -81,6 +81,15 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     if ([AppSettings fileLogEnabled]) [self fileLog:s];
 }
 
+- (void)clearFileLog {
+    [self.logFile closeFile];
+    self.logFile = nil;
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *path = [docs stringByAppendingPathComponent:@"xm6.log"];
+    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    [self log:@"文件日志已清除"];
+}
+
 - (void)fileLog:(NSString *)s {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
@@ -111,6 +120,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [nc addObserver:self selector:@selector(accConnected:) name:EAAccessoryDidConnectNotification object:nil];
     [nc addObserver:self selector:@selector(accDisconnected:) name:EAAccessoryDidDisconnectNotification object:nil];
     [[EAAccessoryManager sharedAccessoryManager] registerForLocalNotifications];
+    [nc addObserver:self selector:@selector(clearFileLog) name:@"XM6ClearFileLog" object:nil];
     self.appActive = YES;
     [nc addObserver:self selector:@selector(appDidBecomeActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
     [nc addObserver:self selector:@selector(appWillResignActive:) name:UIApplicationWillResignActiveNotification object:nil];
