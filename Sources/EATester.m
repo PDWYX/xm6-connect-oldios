@@ -221,7 +221,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [self notifyConnected:YES];
     // 不一定每次都会收到握手请求（耳机可能沿用上一条链路的握手状态），
     // 所以主动轮询当前模式，直到拿到回包为止
-    self.stateAskTimer = [NSTimer scheduledTimerWithTimeInterval:1.3 target:self selector:@selector(askStateTick) userInfo:nil repeats:YES];
+    self.stateAskTimer = [NSTimer scheduledTimerWithTimeInterval:1.3 target:self selector:@selector(askStateTick) userInfo:nil repeats:NO];
 }
 
 - (void)notifyConnected:(BOOL)c {
@@ -375,13 +375,14 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     if (!self.session) { [self.stateAskTimer invalidate]; self.stateAskTimer = nil; return; }
     if (self.gotState) { [self.stateAskTimer invalidate]; self.stateAskTimer = nil; return; }
     if (self.stateAskCount >= 6) {
-        [self log:@"多次查询状态无回应"];
+        [self log:@"查询状态暂无回应，界面保留上次的值"];
         [self.stateAskTimer invalidate];
         self.stateAskTimer = nil;
         return;
     }
     self.stateAskCount++;
     [self queryState];
+    self.stateAskTimer = [NSTimer scheduledTimerWithTimeInterval:1.3 target:self selector:@selector(askStateTick) userInfo:nil repeats:NO];
 }
 
 - (void)queryState {
@@ -410,6 +411,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
             [self.resendTimer invalidate]; self.resendTimer = nil;
             self.lastCommit = nil;
         }
+        [self markStateKnown];
         if (self.stateHandler) self.stateHandler(mode, level);
         return;
     }
@@ -418,6 +420,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         if (p[3]) mode = p[4] ? 2 : 1;
         int level = p[6];
         [self log:@"查询状态: %@ level=%d", mode == 2 ? @"环境声" : (mode == 1 ? @"降噪" : @"关闭"), level];
+        [self markStateKnown];
         if (self.stateHandler) self.stateHandler(mode, level);
         return;
     }
