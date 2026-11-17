@@ -11,8 +11,7 @@ static NSString *EAHex(NSData *d) {
     return s;
 }
 
-// MDR v2 帧(实测): 3E | type | seq(1) | len(4 BE) | payload | checksum | 3C
-// checksum = 从 type 到 payload 末字节的累加和
+// MDR v2: 3E | type | seq(1) | len(4 BE) | payload | checksum | 3C
 static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     NSMutableData *d = [NSMutableData data];
     uint8_t head[2] = {0x3E, type};
@@ -23,8 +22,8 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [d appendBytes:l length:4];
     [d appendData:payload];
     uint8_t sum = 0;
-    const uint8_t *p = d.bytes + 1; // 跳过 0x3E
-    for (NSUInteger i = 1; i < d.length; i++) sum = (uint8_t)(sum + p[i - 1]);
+    const uint8_t *p = d.bytes;
+    for (NSUInteger i = 1; i < d.length; i++) sum = (uint8_t)(sum + p[i]);
     uint8_t ck = sum, end = 0x3C;
     [d appendBytes:&ck length:1];
     [d appendBytes:&end length:1];
@@ -37,9 +36,12 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) NSMutableData *rxBuf;
 @property (nonatomic, strong) NSFileHandle *logFile;
 @property (nonatomic) uint8_t seq;
+@property (nonatomic) int lastLevel;
 @end
 
 @implementation EATester
+
+- (BOOL)connected { return self.session != nil && self.session.outputStream.streamStatus == NSStreamStatusOpen; }
 
 - (void)log:(NSString *)fmt, ... {
     va_list args;
@@ -70,75 +72,61 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 
 - (void)begin {
     if (!self.rxBuf) self.rxBuf = [NSMutableData data];
-    self.seq = 0;
+    self.lastLevel = 10;
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(accConnected:) name:EAAccessoryDidConnectNotification object:nil];
     [nc addObserver:self selector:@selector(accDisconnected:) name:EAAccessoryDidDisconnectNotification object:nil];
     [[EAAccessoryManager sharedAccessoryManager] registerForLocalNotifications];
 
     NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
-    [self log:@"EA 已连配件数: %lu", (unsigned long)accs.count];
-    for (EAAccessory *a in accs) [self dumpAccessory:a];
-    if (accs.count && !self.session) { self.accessory = accs.firstObject; [self openSession]; }
-}
-
-- (void)dumpAccessory:(EAAccessory *)a {
-    [self log:@"--- 配件: %@", a.name];
-    [self log:@"   厂商=%@ 型号=%@ 序列号=%@ 固件=%@", a.manufacturer, a.modelNumber, a.serialNumber, a.firmwareRevision];
-    [self log:@"   connectionID=%lu 协议=%@", (unsigned long)a.connectionID, [a.protocolStrings componentsJoinedByString:@", "]];
+    [self log:@"已连接配件: %lu", (unsigned long)accs.count];
+    if (accs.count) { self.accessory = accs.firstObject; [self openSession]; }
 }
 
 - (void)accConnected:(NSNotification *)n {
     EAAccessory *a = n.userInfo[EAAccessoryKey];
-    [self log:@"EA 配件接入!"];
-    [self dumpAccessory:a];
+    [self log:@"配件接入: %@", a.name];
     self.accessory = a;
     [self openSession];
 }
 
 - (void)accDisconnected:(NSNotification *)n {
     EAAccessory *a = n.userInfo[EAAccessoryKey];
-    [self log:@"EA 配件断开: %@", a.name];
+    [self log:@"配件断开: %@", a.name];
     if (a.connectionID == self.accessory.connectionID) {
         [self closeSession];
         self.accessory = nil;
     }
 }
 
-- (void)showPicker {
-    [self log:@"弹出配件选择器..."];
-    [[EAAccessoryManager sharedAccessoryManager] showBluetoothAccessoryPickerWithNameFilter:nil completion:^(NSError *error) {
-        [self log:@"选择器结束 err=%@", error.localizedDescription ?: @"nil"];
-        NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
-        [self log:@"现在配件数: %lu", (unsigned long)accs.count];
-        for (EAAccessory *a in accs) [self dumpAccessory:a];
-        if (accs.count) { self.accessory = accs.firstObject; [self openSession]; }
-    }];
-}
-
-- (NSString *)pickProtocol:(EAAccessory *)a {
-    for (NSString *p in a.protocolStrings) if ([p isEqualToString:kSonyProtocol]) return p;
-    return a.protocolStrings.firstObject;
-}
-
 - (void)openSession {
-    if (self.session) { [self log:@"会话已存在，先关闭"]; [self closeSession]; }
+    if (self.session) {
+        [[self.session inputStream] close];
+        [[self.session outputStream] close];
+        self.session = nil;
+    }
     if (!self.accessory) {
         NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
         if (accs.count) self.accessory = accs.firstObject;
     }
-    if (!self.accessory) { [self log:@"没有配件可开会话"]; return; }
-    NSString *proto = [self pickProtocol:self.accessory];
-    [self log:@"开会话 协议=%@", proto];
+    if (!self.accessory) { [self log:@"没有配件"]; return; }
+    NSString *proto = nil;
+    for (NSString *p in self.accessory.protocolStrings) if ([p isEqualToString:kSonyProtocol]) proto = p;
+    if (!proto) proto = self.accessory.protocolStrings.firstObject;
     self.session = [[EASession alloc] initWithAccessory:self.accessory forProtocol:proto];
-    if (!self.session) { [self log:@"EASession 创建失败 (协议不被接受?)"]; return; }
+    if (!self.session) { [self log:@"EASession 创建失败"]; return; }
+    self.rxBuf.length = 0;
+    self.seq = 0;
     NSInputStream *in = self.session.inputStream;
     NSOutputStream *out = self.session.outputStream;
     in.delegate = self; out.delegate = self;
     [in scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
     [out scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
     [in open]; [out open];
-    [self log:@"流已打开 in=%ld out=%ld", (long)in.streamStatus, (long)out.streamStatus];
+    [self log:@"会话已打开 %@", proto];
+    // 主动发 INIT
+    self.seq = 0;
+    [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2] label:@"INIT"];
 }
 
 - (void)closeSession {
@@ -151,90 +139,108 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 
 - (void)stream:(NSStream *)stream handleEvent:(NSStreamEvent)event {
     if (event == NSStreamEventHasBytesAvailable && stream == self.session.inputStream) {
-        uint8_t buf[1024];
+        uint8_t buf[2048];
         NSInteger n = [(NSInputStream *)stream read:buf maxLength:sizeof(buf)];
         if (n > 0) {
-            NSData *d = [NSData dataWithBytes:buf length:(NSUInteger)n];
-            [self.rxBuf appendData:d];
+            [self.rxBuf appendData:[NSData dataWithBytes:buf length:(NSUInteger)n]];
             [self parseFrames];
         }
     } else if (event == NSStreamEventErrorOccurred) {
         [self log:@"流错误: %@", stream.streamError.localizedDescription];
     } else if (event == NSStreamEventEndEncountered) {
         [self log:@"流结束"];
-    } else if (event == NSStreamEventOpenCompleted) {
-        [self log:@"%@ open completed", stream == self.session.inputStream ? @"in" : @"out"];
     }
 }
 
+- (NSData *)frameOfType:(uint8_t)type payload:(NSData *)payload {
+    return MDRFrame(type, self.seq++, payload);
+}
+
 - (void)writeRaw:(NSData *)d label:(NSString *)label {
-    if (!self.session) { [self log:@"%@: 没有会话", label]; return; }
     NSOutputStream *out = self.session.outputStream;
-    if (out.streamStatus != NSStreamStatusOpen) { [self log:@"%@: 输出流未打开 status=%ld", label, (long)out.streamStatus]; return; }
+    if (out.streamStatus != NSStreamStatusOpen) { [self log:@"%@: 流未打开", label]; return; }
     NSInteger n = [out write:d.bytes maxLength:d.length];
-    [self log:@"%@ TX %ld/%lu: %@", label, (long)n, (unsigned long)d.length, EAHex(d)];
+    if (n != (NSInteger)d.length) [self log:@"%@ 写失败 %ld/%lu", label, (long)n, (unsigned long)d.length];
 }
 
-- (void)sendLinkSync {
-    uint8_t p[] = {0xFF, 0x55, 0x02, 0x00, 0xEE, 0x10};
-    [self writeRaw:[NSData dataWithBytes:p length:sizeof(p)] label:@"LINK"];
+- (void)writeFrameType:(uint8_t)type payload:(NSData *)payload label:(NSString *)label {
+    if (!self.session) return;
+    NSData *f = [self frameOfType:type payload:payload];
+    [self log:@"TX %@ %@", label, EAHex(payload)];
+    [self writeRaw:f label:label];
 }
 
-- (void)sendInit {
-    self.seq = 0;
-    [self writeRaw:MDRFrame(0x0C, 0, [NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2]) label:@"INIT"];
-}
-
-- (void)sendAmbient:(int)level {
-    uint8_t pl[] = {0x68, 0x15, 0x01, 0x00, 0x01, 0x00, (uint8_t)level};
-    [self writeRaw:MDRFrame(0x0C, self.seq++, [NSData dataWithBytes:pl length:sizeof(pl)]) label:[NSString stringWithFormat:@"AMB%d", level]];
-}
-
-- (void)sendNC {
-    uint8_t pl[] = {0x68, 0x15, 0x01, 0x01, 0x00, 0x00, 0x00};
-    [self writeRaw:MDRFrame(0x0C, self.seq++, [NSData dataWithBytes:pl length:sizeof(pl)]) label:@"NC"];
-}
-
-- (void)sendOff {
-    uint8_t pl[] = {0x68, 0x15, 0x01, 0x00, 0x00, 0x00, 0x00};
-    [self writeRaw:MDRFrame(0x0C, self.seq++, [NSData dataWithBytes:pl length:sizeof(pl)]) label:@"OFF"];
-}
-
-// 带 iAP2 外层的 INIT：ff5a | len(2) | 40 | seq(2) | hck | payload | ck
-- (void)sendWrappedInit {
-    NSData *mdr = MDRFrame(0x0C, 0, [NSData dataWithBytes:(uint8_t[]){0x00,0x00} length:2]);
-    NSMutableData *p = [NSMutableData data];
-    uint8_t pre[] = {0x2B, 0x00, 0x02};
-    [p appendBytes:pre length:3];
-    [p appendData:mdr];
-    [self writeRaw:p label:@"WRAPPED-INIT"];
+- (void)sendAck:(uint8_t)seq {
+    NSData *f = MDRFrame(0x01, seq, [NSData data]);
+    [self writeRaw:f label:@"ACK"];
 }
 
 - (void)parseFrames {
     while (self.rxBuf.length >= 8) {
         const uint8_t *p = self.rxBuf.bytes;
         if (p[0] != 0x3E) {
-            [self log:@"RX 非帧数据(%luB): %@", (unsigned long)self.rxBuf.length, EAHex(self.rxBuf)];
             [self.rxBuf setLength:0];
             return;
         }
         uint32_t len = ((uint32_t)p[3] << 24) | ((uint32_t)p[4] << 16) | ((uint32_t)p[5] << 8) | p[6];
-        NSUInteger total = 1 + 1 + 1 + 4 + len + 1 + 1;
+        if (len > 4096) { [self.rxBuf setLength:0]; return; }
+        NSUInteger total = 7 + len + 2;
         if (self.rxBuf.length < total) return;
-        NSData *frame = [self.rxBuf subdataWithRange:NSMakeRange(0, total)];
+        uint8_t type = p[1], fseq = p[2];
+        NSData *payload = [self.rxBuf subdataWithRange:NSMakeRange(7, len)];
         [self.rxBuf replaceBytesInRange:NSMakeRange(0, total) withBytes:NULL length:0];
-        NSData *payload = [frame subdataWithRange:NSMakeRange(7, len)];
-        [self log:@"RX type=%02X seq=%02X len=%lu %@", p[1], p[2], (unsigned long)len, EAHex(payload)];
+        if (type == 0x01) continue;  // 对端 ACK
+        [self sendAck:fseq];
+        [self handleType:type payload:payload];
     }
 }
 
-- (void)eaRun {
-    [self log:@"=== 全流程 INIT -> 环境声10 ==="];
-    self.seq = 0;
-    [self sendInit];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self sendAmbient:10];
-    });
+- (void)handleType:(uint8_t)type payload:(NSData *)payload {
+    const uint8_t *p = payload.bytes;
+    NSUInteger n = payload.length;
+    if (type == 0x0C && n >= 9 && p[0] == 0x69 && p[1] == 0x19) {
+        int mode = 0;
+        if (p[3]) mode = p[4] ? 2 : 1;
+        int level = p[6];
+        [self log:@"状态: %@ level=%d", mode == 2 ? @"环境声" : (mode == 1 ? @"降噪" : @"关闭"), level];
+        if (self.stateHandler) self.stateHandler(mode, level);
+        return;
+    }
+    if (type == 0x0C && n >= 5 && p[0] == 0xC9) {
+        // 设置项推送: C9 01 [len][key ascii][value..]
+        NSString *key = [[NSString alloc] initWithBytes:p + 3 length:MIN((NSUInteger)p[2], n - 3) encoding:NSUTF8StringEncoding];
+        [self log:@"推送 %@", key ?: EAHex(payload)];
+        return;
+    }
+    if (type == 0x0C && n == 2 && p[0] == 0x00) return; // 心跳
+    [self log:@"RX t=%02X %@", type, EAHex(payload)];
+}
+
+- (NSData *)ambientPayload:(uint8_t)level commit:(BOOL)commit nc:(BOOL)nc off:(BOOL)off {
+    uint8_t b[9];
+    b[0] = 0x68; b[1] = 0x19;
+    b[2] = commit ? 0x01 : 0x00;
+    b[3] = off ? 0x00 : 0x01;
+    b[4] = (off || nc) ? 0x00 : 0x01;
+    b[5] = 0x00;
+    b[6] = level;
+    b[7] = 0x00; b[8] = 0x00;
+    return [NSData dataWithBytes:b length:9];
+}
+
+- (void)setAmbient:(uint8_t)level commit:(BOOL)commit {
+    self.lastLevel = level;
+    [self writeFrameType:0x0C payload:[self ambientPayload:level commit:commit nc:NO off:NO]
+                   label:[NSString stringWithFormat:@"AMBIENT %d%@", level, commit ? @"" : @"(拖动)"]];
+}
+
+- (void)setNCWithLevel:(uint8_t)level {
+    self.lastLevel = level;
+    [self writeFrameType:0x0C payload:[self ambientPayload:level commit:YES nc:YES off:NO] label:@"NC"];
+}
+
+- (void)setOffWithLevel:(uint8_t)level {
+    [self writeFrameType:0x0C payload:[self ambientPayload:level commit:YES nc:NO off:YES] label:@"OFF"];
 }
 
 @end

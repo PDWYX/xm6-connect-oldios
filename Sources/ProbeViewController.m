@@ -41,130 +41,140 @@ static NSString *Hex(NSData *d) {
 - (void)readStateChars;
 @end
 
+
 @interface ProbeViewController ()
-@property (nonatomic, strong) UITextView *textView;
-@property (nonatomic, strong) BLETester *tester;
-@property (nonatomic, strong) EATester *eaTester;
+@property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UILabel *levelLabel;
+@property (nonatomic, strong) UISlider *slider;
+@property (nonatomic, strong) UISegmentedControl *modeControl;
+@property (nonatomic, strong) UITextView *logView;
+@property (nonatomic, strong) EATester *ea;
 @property (nonatomic, strong) NSMutableString *logBuffer;
+@property (nonatomic) BOOL suppress;
 @end
 
 @implementation ProbeViewController
-
-- (UIButton *)buttonWithTitle:(NSString *)title sel:(NSString *)sel bg:(CGFloat)bg {
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-    [b setTitle:title forState:UIControlStateNormal];
-    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    b.backgroundColor = [UIColor colorWithWhite:bg alpha:1.0];
-    b.titleLabel.font = [UIFont systemFontOfSize:12];
-    b.titleLabel.adjustsFontSizeToFitWidth = YES;
-    [b addTarget:self action:NSSelectorFromString(sel) forControlEvents:UIControlEventTouchUpInside];
-    return b;
-}
-
-- (UIStackView *)rowWithTitles:(NSArray *)titles sels:(NSArray *)sels bg:(CGFloat)bg {
-    UIStackView *row = [[UIStackView alloc] init];
-    row.axis = UILayoutConstraintAxisHorizontal;
-    row.distribution = UIStackViewDistributionFillEqually;
-    row.spacing = 6;
-    row.translatesAutoresizingMaskIntoConstraints = NO;
-    [row.heightAnchor constraintEqualToConstant:40].active = YES;
-    for (NSUInteger i = 0; i < titles.count; i++) {
-        [row addArrangedSubview:[self buttonWithTitle:titles[i] sel:sels[i] bg:bg]];
-    }
-    return row;
-}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor blackColor];
     self.logBuffer = [NSMutableString string];
 
-    self.textView = [[UITextView alloc] initWithFrame:CGRectZero];
-    self.textView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
-    self.textView.textColor = [UIColor colorWithRed:0.55 green:1.0 blue:0.55 alpha:1.0];
-    self.textView.font = [UIFont fontWithName:@"Menlo" size:11] ?: [UIFont systemFontOfSize:11];
-    self.textView.editable = NO;
-    self.textView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:self.textView];
+    self.statusLabel = [[UILabel alloc] init];
+    self.statusLabel.text = @"正在连接耳机…";
+    self.statusLabel.textColor = [UIColor whiteColor];
+    self.statusLabel.font = [UIFont boldSystemFontOfSize:17];
+    self.statusLabel.textAlignment = NSTextAlignmentCenter;
 
-    UIStackView *outer = [[UIStackView alloc] init];
-    outer.axis = UILayoutConstraintAxisVertical;
-    outer.spacing = 6;
-    outer.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:outer];
+    self.modeControl = [[UISegmentedControl alloc] initWithItems:@[@"降噪", @"环境声", @"关闭"]];
+    self.modeControl.selectedSegmentIndex = UISegmentedControlNoSegment;
+    [self.modeControl addTarget:self action:@selector(modeChanged:) forControlEvents:UIControlEventValueChanged];
 
-    [outer addArrangedSubview:[self rowWithTitles:@[@"连接", @"INIT", @"扫描", @"读状态"]
-                                            sels:@[@"doConnect", @"doInit", @"doSweep", @"doRead"] bg:0.28]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"环境5", @"环境10", @"环境15", @"环境20"]
-                                            sels:@[@"lvl5", @"lvl10", @"lvl15", @"lvl20"] bg:0.22]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"降噪", @"通道2", @"环境8B"]
-                                            sels:@[@"doNC", @"doAlt", @"doW10"] bg:0.22]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"挑配件", @"开会话", @"EA-INIT", @"EA环境10"]
-                                            sels:@[@"eaPicker", @"eaOpen", @"eaInit", @"eaAmb10"] bg:0.62]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"EA降噪", @"EA关", @"EA-KILL", @"EA-WRAP"]
-                                            sels:@[@"eaNC", @"eaOff", @"eaLink", @"eaWrap"] bg:0.62]];
-    [outer addArrangedSubview:[self rowWithTitles:@[@"EA全流程", @"EA环境1", @"EA环境20", @"清屏"]
-                                            sels:@[@"eaRun", @"eaAmb1", @"eaAmb20", @"eaClear"] bg:0.72]];
+    self.levelLabel = [[UILabel alloc] init];
+    self.levelLabel.text = @"环境声级别 10";
+    self.levelLabel.textColor = [UIColor colorWithWhite:0.8 alpha:1.0];
+    self.levelLabel.font = [UIFont systemFontOfSize:14];
+    self.levelLabel.textAlignment = NSTextAlignmentCenter;
+
+    self.slider = [[UISlider alloc] init];
+    self.slider.minimumValue = 1;
+    self.slider.maximumValue = 20;
+    self.slider.value = 10;
+    [self.slider addTarget:self action:@selector(sliderMoved:) forControlEvents:UIControlEventValueChanged];
+    [self.slider addTarget:self action:@selector(sliderDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+
+    UIButton *reconnect = [UIButton buttonWithType:UIButtonTypeSystem];
+    [reconnect setTitle:@"重新连接" forState:UIControlStateNormal];
+    [reconnect setTitleColor:[UIColor colorWithWhite:0.6 alpha:1.0] forState:UIControlStateNormal];
+    [reconnect addTarget:self action:@selector(reconnectTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    self.logView = [[UITextView alloc] init];
+    self.logView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    self.logView.textColor = [UIColor colorWithRed:0.5 green:0.9 blue:0.5 alpha:1.0];
+    self.logView.font = [UIFont fontWithName:@"Menlo" size:9] ?: [UIFont systemFontOfSize:9];
+    self.logView.editable = NO;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusLabel, self.modeControl, self.levelLabel, self.slider, reconnect, self.logView]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 14;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:stack];
 
     UILayoutGuide *g = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [self.textView.topAnchor constraintEqualToAnchor:g.topAnchor constant:8],
-        [self.textView.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
-        [self.textView.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
-        [self.textView.bottomAnchor constraintEqualToAnchor:outer.topAnchor constant:-8],
-        [outer.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
-        [outer.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
-        [outer.bottomAnchor constraintEqualToAnchor:g.bottomAnchor constant:-8],
+        [stack.topAnchor constraintEqualToAnchor:g.topAnchor constant:20],
+        [stack.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:20],
+        [stack.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-20],
+        [stack.bottomAnchor constraintEqualToAnchor:g.bottomAnchor constant:-16],
+        [self.modeControl.heightAnchor constraintEqualToConstant:38],
+        [self.logView.heightAnchor constraintGreaterThanOrEqualToConstant:120],
+        [self.slider.heightAnchor constraintEqualToConstant:40],
     ]];
 
     __weak typeof(self) weakSelf = self;
-    self.tester = [[BLETester alloc] init];
-    self.tester.logger = ^(NSString *line) { [weakSelf appendLog:line]; };
-    [self.tester begin];
-
-    self.eaTester = [[EATester alloc] init];
-    self.eaTester.logger = ^(NSString *line) { [weakSelf appendLog:line]; };
-    [self.eaTester begin];
+    self.ea = [[EATester alloc] init];
+    self.ea.logger = ^(NSString *line) { [weakSelf appendLog:line]; };
+    self.ea.stateHandler = ^(int mode, int level) { [weakSelf applyMode:mode level:level]; };
+    [self.ea begin];
 }
 
 - (void)appendLog:(NSString *)line {
     [self.logBuffer appendFormat:@"%@\n", line];
-    if (self.logBuffer.length > 20000) {
-        [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 16000)];
+    if (self.logBuffer.length > 8000) {
+        [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 6000)];
     }
     NSString *t = [self.logBuffer copy];
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.textView.text = t;
-        if (t.length) [self.textView scrollRangeToVisible:NSMakeRange(t.length, 0)];
+        self.logView.text = t;
+        if (t.length) [self.logView scrollRangeToVisible:NSMakeRange(t.length, 0)];
+        self.statusLabel.text = self.ea.connected ? @"WH-1000XM6 已连接" : @"未连接";
+        self.statusLabel.textColor = self.ea.connected ? [UIColor whiteColor] : [UIColor redColor];
     });
-    NSLog(@"[XM6] %@", line);
 }
 
-- (void)doConnect { [self.tester begin]; }
-- (void)doInit { [self.tester sendInit]; }
-- (void)doSweep { [self.tester runSweep]; }
-- (void)doAlt { [self.tester toggleAlt]; }
-- (void)doRead { [self.tester readStateChars]; }
-- (void)lvl5 { [self.tester sendAmbientLevel:5 wind:NO]; }
-- (void)lvl10 { [self.tester sendAmbientLevel:10 wind:NO]; }
-- (void)lvl15 { [self.tester sendAmbientLevel:15 wind:NO]; }
-- (void)lvl20 { [self.tester sendAmbientLevel:20 wind:NO]; }
-- (void)doNC { [self.tester sendNCWithWind:NO]; }
-- (void)doW10 { [self.tester sendAmbientLevel:10 wind:YES]; }
-- (void)doWNC { [self.tester sendNCWithWind:YES]; }
-- (void)eaPicker { [self.eaTester showPicker]; }
-- (void)eaList { [self.eaTester begin]; }
-- (void)eaOpen { [self.eaTester openSession]; }
-- (void)eaInit { [self.eaTester sendInit]; }
-- (void)eaAmb10 { [self.eaTester sendAmbient:10]; }
-- (void)eaNC { [self.eaTester sendNC]; }
-- (void)eaOff { [self.eaTester sendOff]; }
-- (void)eaLink { [self.eaTester sendLinkSync]; }
-- (void)eaWrap { [self.eaTester sendWrappedInit]; }
-- (void)eaRun { [self.eaTester eaRun]; }
-- (void)eaAmb1 { [self.eaTester sendAmbient:1]; }
-- (void)eaAmb20 { [self.eaTester sendAmbient:20]; }
-- (void)eaClear { [self appendLog:@"----------- 清屏 -----------"]; }
+- (void)applyMode:(int)mode level:(int)level {
+    self.suppress = YES;
+    if (mode == 1) self.modeControl.selectedSegmentIndex = 0;
+    else if (mode == 2) self.modeControl.selectedSegmentIndex = 1;
+    else self.modeControl.selectedSegmentIndex = 2;
+    if (level >= 1 && level <= 20) {
+        self.slider.value = level;
+        self.levelLabel.text = [NSString stringWithFormat:@"环境声级别 %d", level];
+    }
+    self.slider.enabled = (mode == 2);
+    self.suppress = NO;
+}
+
+- (int)level {
+    return (int)lroundf(self.slider.value);
+}
+
+- (void)sliderMoved:(UISlider *)s {
+    self.levelLabel.text = [NSString stringWithFormat:@"环境声级别 %d", [self level]];
+    if (self.suppress) return;
+    if (self.modeControl.selectedSegmentIndex != 1) {
+        self.modeControl.selectedSegmentIndex = 1;
+    }
+    [self.ea setAmbient:(uint8_t)[self level] commit:NO];
+}
+
+- (void)sliderDone:(UISlider *)s {
+    [self.ea setAmbient:(uint8_t)[self level] commit:YES];
+}
+
+- (void)modeChanged:(UISegmentedControl *)c {
+    if (self.suppress) return;
+    int lv = [self level];
+    if (c.selectedSegmentIndex == 0) [self.ea setNCWithLevel:(uint8_t)lv];
+    else if (c.selectedSegmentIndex == 1) [self.ea setAmbient:(uint8_t)lv commit:YES];
+    else [self.ea setOffWithLevel:(uint8_t)lv];
+    self.slider.enabled = (c.selectedSegmentIndex == 1);
+}
+
+- (void)reconnectTapped {
+    [self appendLog:@"--- 重新连接 ---"];
+    [self.ea openSession];
+}
 
 @end
 
