@@ -38,6 +38,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) NSFileHandle *logFile;
 @property (nonatomic, strong) NSDateFormatter *df;
 @property (nonatomic) BOOL connNotified;
+- (void)queryState;
 @property (nonatomic) uint8_t seq;
 @property (nonatomic, strong) NSMutableData *outQueue;
 @property (nonatomic) BOOL outOpened;
@@ -237,8 +238,6 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [self writeRaw:f label:label];
 }
 
-- (void)queryState;
-
 - (void)sendAck:(uint8_t)seq {
     uint8_t ackSeq = (uint8_t)((seq + 1) & 0x01);
     NSData *f = MDRFrame(0x01, ackSeq, [NSData data]);
@@ -365,7 +364,6 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 }
 
 - (void)setNCWithLevel:(uint8_t)level {
-    self.lastLevel = level;
     NSData *p = [self ambientPayload:level commit:YES nc:YES off:NO];
     [self writeFrameType:0x0C payload:p label:@"NC"];
     [self scheduleResendForPayload:p mode:1];
