@@ -1,4 +1,5 @@
 #import "EATester.h"
+#import <UIKit/UIKit.h>
 #import <ExternalAccessory/ExternalAccessory.h>
 #import "AppSettings.h"
 
@@ -41,8 +42,11 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic, strong) NSTimer *bootstrapTimer;
 @property (nonatomic) int bootstrapTries;
 @property (nonatomic) BOOL linkReady;
+@property (nonatomic) BOOL appActive;
+@property (nonatomic) int reopenTries;
 - (void)queryState;
 - (void)sendBootstrap;
+- (void)scheduleReopen;
 @property (nonatomic) uint8_t seq;
 @property (nonatomic, strong) NSMutableData *outQueue;
 @property (nonatomic) BOOL outOpened;
@@ -101,6 +105,9 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [nc addObserver:self selector:@selector(accConnected:) name:EAAccessoryDidConnectNotification object:nil];
     [nc addObserver:self selector:@selector(accDisconnected:) name:EAAccessoryDidDisconnectNotification object:nil];
     [[EAAccessoryManager sharedAccessoryManager] registerForLocalNotifications];
+    self.appActive = YES;
+    [nc addObserver:self selector:@selector(appDidBecomeActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [nc addObserver:self selector:@selector(appWillResignActive:) name:UIApplicationWillResignActiveNotification object:nil];
 
     NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
     [self log:@"已连接配件: %lu", (unsigned long)accs.count];
@@ -125,6 +132,43 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     }
 }
 
+// iOS 会在 App 进入后台时把 EA 会话拆掉，回前台拿到的是一对已经死掉的流。
+// 所以回前台/流结束/流错误都走这里：自动重开会话，而不是让用户手点重新连接。
+- (void)scheduleReopen {
+    if (!self.appActive) { [self log:@"在后台，暂不重开"]; return; }
+    if (!self.accessory) {
+        NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
+        if (accs.count) self.accessory = accs.firstObject;
+    }
+    if (!self.accessory) { [self log:@"没有配件可重开"]; return; }
+    if (self.reopenTries >= 8) { [self log:@"重开次数过多，停止"]; return; }
+    self.reopenTries++;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(openSession) object:nil];
+    [self performSelector:@selector(openSession) withObject:nil afterDelay:0.8];
+}
+
+- (void)appWillResignActive:(NSNotification *)n {
+    [self log:@"进入后台"];
+    self.appActive = NO;
+}
+
+- (void)appDidBecomeActive:(NSNotification *)n {
+    [self log:@"回到前台"];
+    self.appActive = YES;
+    self.reopenTries = 0;
+    if (!self.accessory) {
+        NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
+        if (accs.count) self.accessory = accs.firstObject;
+    }
+    if (!self.accessory) return;
+    BOOL dead = (self.session == nil);
+    if (!dead) {
+        NSStreamStatus s = self.session.inputStream.streamStatus;
+        if (s == NSStreamStatusClosed || s == NSStreamStatusError || s == NSStreamStatusNotOpen) dead = YES;
+    }
+    if (dead) { [self log:@"会话已失效，自动重开"]; [self scheduleReopen]; }
+}
+
 - (void)openSession {
     if (self.session) {
         [[self.session inputStream] close];
@@ -141,6 +185,8 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     if (!proto) proto = self.accessory.protocolStrings.firstObject;
     self.session = [[EASession alloc] initWithAccessory:self.accessory forProtocol:proto];
     if (!self.session) { [self log:@"EASession 创建失败"]; return; }
+    self.reopenTries = 0;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(openSession) object:nil];
     self.rxBuf.length = 0;
     self.seq = 0;
     NSInputStream *in = self.session.inputStream;
@@ -207,8 +253,12 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         }
     } else if (event == NSStreamEventErrorOccurred) {
         [self log:@"流错误: %@", stream.streamError.localizedDescription];
+        [self notifyConnected:NO];
+        [self scheduleReopen];
     } else if (event == NSStreamEventEndEncountered) {
         [self log:@"流结束"];
+        [self notifyConnected:NO];
+        [self scheduleReopen];
     }
 }
 
@@ -339,6 +389,10 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         // 设置项推送: C9 01 [len][key ascii][value..]
         NSString *key = [[NSString alloc] initWithBytes:p + 3 length:MIN((NSUInteger)p[2], n - 3) encoding:NSUTF8StringEncoding];
         [self log:@"推送 %@", key ?: EAHex(payload)];
+        return;
+    }
+    if (type == 0x0C && n >= 3 && p[0] == 0xA9) {
+        [self log:@"耳机通知会话将挂起 (A9 %@)", EAHex(payload)];
         return;
     }
     if (type == 0x0C && n == 2 && p[0] == 0x00) return; // 心跳
