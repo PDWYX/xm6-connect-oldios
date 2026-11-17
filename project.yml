@@ -8,6 +8,8 @@ targets:
     type: application
     platform: iOS
     sources: [Sources]
+    dependencies:
+      - sdk: ExternalAccessory.framework
     info:
       path: Sources/Info.plist
       properties:
@@ -21,6 +23,10 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiresFullScreen: true
         MinimumOSVersion: "13.0"
+        UISupportedExternalAccessoryProtocols:
+          - jp.co.sony.songpal.mdr.link2
+          - com.sony.sca.servicelinkage
+          - com.sony.mdr.ar.ext1
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pdwyx.xm6control

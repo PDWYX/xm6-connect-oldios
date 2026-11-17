@@ -1,5 +1,6 @@
 #import "ProbeViewController.h"
 #import <CoreBluetooth/CoreBluetooth.h>
+#import "EATester.h"
 
 static NSString *const kWriteChar  = @"5B833C10-6BC7-4802-8E9A-723CECA4BD8F";
 static NSString *const kWriteChar11 = @"5B833C11-6BC7-4802-8E9A-723CECA4BD8F";
@@ -43,6 +44,7 @@ static NSString *Hex(NSData *d) {
 @interface ProbeViewController ()
 @property (nonatomic, strong) UITextView *textView;
 @property (nonatomic, strong) BLETester *tester;
+@property (nonatomic, strong) EATester *eaTester;
 @property (nonatomic, strong) NSMutableString *logBuffer;
 @end
 
@@ -97,6 +99,8 @@ static NSString *Hex(NSData *d) {
                                             sels:@[@"lvl5", @"lvl10", @"lvl15", @"lvl20"] bg:0.22]];
     [outer addArrangedSubview:[self rowWithTitles:@[@"降噪", @"通道2", @"环境8B"]
                                             sels:@[@"doNC", @"doAlt", @"doW10"] bg:0.22]];
+    [outer addArrangedSubview:[self rowWithTitles:@[@"挑配件", @"EA列表", @"开会话", @"EA测试"]
+                                            sels:@[@"eaPicker", @"eaList", @"eaOpen", @"eaTest"] bg:0.62]];
 
     UILayoutGuide *g = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -113,6 +117,10 @@ static NSString *Hex(NSData *d) {
     self.tester = [[BLETester alloc] init];
     self.tester.logger = ^(NSString *line) { [weakSelf appendLog:line]; };
     [self.tester begin];
+
+    self.eaTester = [[EATester alloc] init];
+    self.eaTester.logger = ^(NSString *line) { [weakSelf appendLog:line]; };
+    [self.eaTester begin];
 }
 
 - (void)appendLog:(NSString *)line {
@@ -140,6 +148,10 @@ static NSString *Hex(NSData *d) {
 - (void)doNC { [self.tester sendNCWithWind:NO]; }
 - (void)doW10 { [self.tester sendAmbientLevel:10 wind:YES]; }
 - (void)doWNC { [self.tester sendNCWithWind:YES]; }
+- (void)eaPicker { [self.eaTester showPicker]; }
+- (void)eaList { [self.eaTester begin]; }
+- (void)eaOpen { [self.eaTester openSession]; }
+- (void)eaTest { [self.eaTester sendTest]; }
 
 @end
 
