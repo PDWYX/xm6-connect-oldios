@@ -44,9 +44,15 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 @property (nonatomic) BOOL linkReady;
 @property (nonatomic) BOOL appActive;
 @property (nonatomic) int reopenTries;
+@property (nonatomic) BOOL sessionDead;
+@property (nonatomic) BOOL gotState;
+@property (nonatomic, strong) NSTimer *stateAskTimer;
+@property (nonatomic) int stateAskCount;
 - (void)queryState;
 - (void)sendBootstrap;
 - (void)scheduleReopen;
+- (void)askStateTick;
+- (void)markStateKnown;
 @property (nonatomic) uint8_t seq;
 @property (nonatomic, strong) NSMutableData *outQueue;
 @property (nonatomic) BOOL outOpened;
@@ -143,6 +149,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     if (!self.accessory) { [self log:@"没有配件可重开"]; return; }
     if (self.reopenTries >= 8) { [self log:@"重开次数过多，停止"]; return; }
     self.reopenTries++;
+    self.sessionDead = YES;
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(openSession) object:nil];
     [self performSelector:@selector(openSession) withObject:nil afterDelay:0.8];
 }
@@ -156,15 +163,20 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [self log:@"回到前台"];
     self.appActive = YES;
     self.reopenTries = 0;
+    self.sessionDead = NO;
+    self.gotState = NO;
+    self.stateAskCount = 0;
+    [self.stateAskTimer invalidate];
+    self.stateAskTimer = nil;
     if (!self.accessory) {
         NSArray *accs = [[EAAccessoryManager sharedAccessoryManager] connectedAccessories];
         if (accs.count) self.accessory = accs.firstObject;
     }
     if (!self.accessory) return;
-    BOOL dead = (self.session == nil);
+    BOOL dead = self.sessionDead || (self.session == nil) || !self.handshakeReplied;
     if (!dead) {
         NSStreamStatus s = self.session.inputStream.streamStatus;
-        if (s == NSStreamStatusClosed || s == NSStreamStatusError || s == NSStreamStatusNotOpen) dead = YES;
+        if (s != NSStreamStatusOpen) dead = YES;
     }
     if (dead) { [self log:@"会话已失效，自动重开"]; [self scheduleReopen]; }
 }
@@ -207,6 +219,9 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     [out open];
     [self log:@"会话已打开 %@", proto];
     [self notifyConnected:YES];
+    // 不一定每次都会收到握手请求（耳机可能沿用上一条链路的握手状态），
+    // 所以主动轮询当前模式，直到拿到回包为止
+    self.stateAskTimer = [NSTimer scheduledTimerWithTimeInterval:1.3 target:self selector:@selector(askStateTick) userInfo:nil repeats:YES];
 }
 
 - (void)notifyConnected:(BOOL)c {
@@ -253,10 +268,12 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         }
     } else if (event == NSStreamEventErrorOccurred) {
         [self log:@"流错误: %@", stream.streamError.localizedDescription];
+        self.sessionDead = YES;
         [self notifyConnected:NO];
         [self scheduleReopen];
     } else if (event == NSStreamEventEndEncountered) {
         [self log:@"流结束"];
+        self.sessionDead = YES;
         [self notifyConnected:NO];
         [self scheduleReopen];
     }
@@ -346,6 +363,25 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         [self sendAck:fseq];
         [self handleType:type payload:payload];
     }
+}
+
+- (void)markStateKnown {
+    self.gotState = YES;
+    [self.stateAskTimer invalidate];
+    self.stateAskTimer = nil;
+}
+
+- (void)askStateTick {
+    if (!self.session) { [self.stateAskTimer invalidate]; self.stateAskTimer = nil; return; }
+    if (self.gotState) { [self.stateAskTimer invalidate]; self.stateAskTimer = nil; return; }
+    if (self.stateAskCount >= 6) {
+        [self log:@"多次查询状态无回应"];
+        [self.stateAskTimer invalidate];
+        self.stateAskTimer = nil;
+        return;
+    }
+    self.stateAskCount++;
+    [self queryState];
 }
 
 - (void)queryState {
