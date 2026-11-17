@@ -188,7 +188,9 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
 }
 
 - (NSData *)frameOfType:(uint8_t)type payload:(NSData *)payload {
-    return MDRFrame(type, self.seq++, payload);
+    NSData *f = MDRFrame(type, self.seq, payload);
+    self.seq ^= 1;
+    return f;
 }
 
 - (void)pump {
@@ -247,6 +249,11 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
     }
 }
 
+- (void)queryState {
+    if (!self.session) return;
+    [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x66,0x19} length:2] label:@"GET-STATE"];
+}
+
 - (void)handleType:(uint8_t)type payload:(NSData *)payload {
     const uint8_t *p = payload.bytes;
     NSUInteger n = payload.length;
@@ -255,6 +262,7 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
         if (!self.handshakeReplied) {
             self.handshakeReplied = YES;
             [self writeFrameType:0x0C payload:[NSData dataWithBytes:(uint8_t[]){0x02,0x00} length:2] label:@"HANDSHAKE"];
+            [self performSelector:@selector(queryState) withObject:nil afterDelay:0.35];
         }
         return;
     }
@@ -267,6 +275,14 @@ static NSData *MDRFrame(uint8_t type, uint8_t seq, NSData *payload) {
             [self.resendTimer invalidate]; self.resendTimer = nil;
             self.lastCommit = nil;
         }
+        if (self.stateHandler) self.stateHandler(mode, level);
+        return;
+    }
+    if (type == 0x0C && n >= 9 && p[0] == 0x67 && p[1] == 0x19) {
+        int mode = 0;
+        if (p[3]) mode = p[4] ? 2 : 1;
+        int level = p[6];
+        [self log:@"查询状态: %@ level=%d", mode == 2 ? @"环境声" : (mode == 1 ? @"降噪" : @"关闭"), level];
         if (self.stateHandler) self.stateHandler(mode, level);
         return;
     }

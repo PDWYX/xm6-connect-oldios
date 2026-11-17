@@ -1,4 +1,5 @@
 #import "ProbeViewController.h"
+#import <ExternalAccessory/ExternalAccessory.h>
 #import <CoreBluetooth/CoreBluetooth.h>
 #import "EATester.h"
 
@@ -88,13 +89,23 @@ static NSString *Hex(NSData *d) {
     [reconnect setTitleColor:[UIColor colorWithWhite:0.6 alpha:1.0] forState:UIControlStateNormal];
     [reconnect addTarget:self action:@selector(reconnectTapped) forControlEvents:UIControlEventTouchUpInside];
 
+    UIButton *picker = [UIButton buttonWithType:UIButtonTypeSystem];
+    [picker setTitle:@"选择设备" forState:UIControlStateNormal];
+    [picker setTitleColor:[UIColor colorWithWhite:0.6 alpha:1.0] forState:UIControlStateNormal];
+    [picker addTarget:self action:@selector(pickerTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *btnRow = [[UIStackView alloc] initWithArrangedSubviews:@[reconnect, picker]];
+    btnRow.axis = UILayoutConstraintAxisHorizontal;
+    btnRow.spacing = 24;
+    btnRow.distribution = UIStackViewDistributionFillEqually;
+
     self.logView = [[UITextView alloc] init];
     self.logView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
     self.logView.textColor = [UIColor colorWithRed:0.5 green:0.9 blue:0.5 alpha:1.0];
     self.logView.font = [UIFont fontWithName:@"Menlo" size:9] ?: [UIFont systemFontOfSize:9];
     self.logView.editable = NO;
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusLabel, self.modeControl, self.levelLabel, self.slider, reconnect, self.logView]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusLabel, self.modeControl, self.levelLabel, self.slider, btnRow, self.logView]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 14;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -169,6 +180,13 @@ static NSString *Hex(NSData *d) {
     else if (c.selectedSegmentIndex == 1) [self.ea setAmbient:(uint8_t)lv commit:YES];
     else [self.ea setOffWithLevel:(uint8_t)lv];
     self.slider.enabled = (c.selectedSegmentIndex == 1);
+}
+
+- (void)pickerTapped {
+    [self appendLog:@"--- 弹出配件选择器 ---"];
+    [[EAAccessoryManager sharedAccessoryManager] showBluetoothAccessoryPickerWithNameFilter:nil completion:^(NSError *error) {
+        [self appendLog:[NSString stringWithFormat:@"选择器结束 err=%@", error.localizedDescription ?: @"nil"]];
+    }];
 }
 
 - (void)reconnectTapped {
@@ -398,106 +416,3 @@ static NSString *Hex(NSData *d) {
 
 - (void)toggleAlt {
     self.useAlt = !self.useAlt;
-    [self log:@"写入通道切换为 %@", self.useAlt ? @"5B833C11" : @"5B833C10"];
-}
-
-static NSData *EscapeBody(NSData *raw) {
-    NSMutableData *out = [NSMutableData data];
-    const uint8_t *p = raw.bytes;
-    for (NSUInteger i = 0; i < raw.length; i++) {
-        uint8_t b = p[i];
-        if (b == 0x3C || b == 0x3D || b == 0x3E) {
-            uint8_t e[2] = {0x3D, (uint8_t)(b & 0xEF)};
-            [out appendBytes:e length:2];
-        } else {
-            [out appendBytes:&b length:1];
-        }
-    }
-    return out;
-}
-
-- (NSData *)frameWithType:(uint8_t)type seq:(uint8_t)seq payload:(NSData *)payload {
-    NSMutableData *body = [NSMutableData data];
-    uint8_t head[6];
-    head[0] = type;
-    head[1] = seq;
-    uint32_t len = (uint32_t)payload.length;
-    head[2] = (len >> 24) & 0xFF; head[3] = (len >> 16) & 0xFF;
-    head[4] = (len >> 8) & 0xFF;  head[5] = len & 0xFF;
-    [body appendBytes:head length:6];
-    [body appendData:payload];
-    uint8_t sum = 0;
-    const uint8_t *bp = body.bytes;
-    for (NSUInteger i = 0; i < body.length; i++) sum = (uint8_t)(sum + bp[i]);
-    [body appendBytes:&sum length:1];
-
-    NSMutableData *full = [NSMutableData data];
-    uint8_t s = 0x3E, e = 0x3C;
-    [full appendBytes:&s length:1];
-    [full appendData:EscapeBody(body)];
-    [full appendBytes:&e length:1];
-    return full;
-}
-
-- (void)writePayload:(NSData *)payload label:(NSString *)label {
-    CBCharacteristic *ch = [self activeWriteChar];
-    if (self.peripheral == nil || ch == nil) {
-        [self log:@"未连接（peripheral=%@ char=%@），先按“连接”", self.peripheral, ch];
-        return;
-    }
-    NSData *frame = [self frameWithType:0x0C seq:0 payload:payload];
-    [self log:@"WRITE %@ payload=%@", label, Hex(payload)];
-    [self log:@"       frame=%@", Hex(frame)];
-    [self.peripheral writeValue:frame forCharacteristic:ch type:CBCharacteristicWriteWithResponse];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self readStateChars];
-    });
-}
-
-- (void)sendInit {
-    const uint8_t p[2] = {0x00, 0x00};
-    [self writePayload:[NSData dataWithBytes:p length:2] label:@"INIT"];
-}
-
-- (void)sendAmbientLevel:(int)level wind:(BOOL)wind {
-    NSMutableData *p = [NSMutableData data];
-    uint8_t b0 = 0x68, b1 = wind ? 0x17 : 0x15, b2 = 0x01, nc = 0x00, amb = 0x01, windByte = 0x02, focus = 0x00;
-    [p appendBytes:&b0 length:1];
-    [p appendBytes:&b1 length:1];
-    [p appendBytes:&b2 length:1];
-    [p appendBytes:&nc length:1];
-    [p appendBytes:&amb length:1];
-    if (wind) [p appendBytes:&windByte length:1];
-    [p appendBytes:&focus length:1];
-    uint8_t lv = (uint8_t)level;
-    [p appendBytes:&lv length:1];
-    [self writePayload:p label:[NSString stringWithFormat:@"AMBIENT %d%@", level, wind ? @" (8B)" : @""]];
-}
-
-- (void)sendNCWithWind:(BOOL)wind {
-    NSMutableData *p = [NSMutableData data];
-    uint8_t b0 = 0x68, b1 = wind ? 0x17 : 0x15, b2 = 0x01, nc = 0x01, amb = 0x00, windByte = 0x02, focus = 0x00, lv = 0x00;
-    [p appendBytes:&b0 length:1];
-    [p appendBytes:&b1 length:1];
-    [p appendBytes:&b2 length:1];
-    [p appendBytes:&nc length:1];
-    [p appendBytes:&amb length:1];
-    if (wind) [p appendBytes:&windByte length:1];
-    [p appendBytes:&focus length:1];
-    [p appendBytes:&lv length:1];
-    [self writePayload:p label:wind ? @"NC (8B)" : @"NC"];
-}
-
-- (void)readStateChars {
-    if (self.peripheral == nil) return;
-    for (CBService *s in self.peripheral.services) {
-        for (CBCharacteristic *c in s.characteristics) {
-            NSString *u = c.UUID.UUIDString.uppercaseString;
-            if ([u hasPrefix:@"5B833C68"] || [u hasPrefix:@"76C13022"] || [u hasPrefix:@"2A50"] || [u hasPrefix:@"8E0C0001"]) {
-                [self.peripheral readValueForCharacteristic:c];
-            }
-        }
-    }
-}
-
-@end
